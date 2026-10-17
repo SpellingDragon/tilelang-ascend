@@ -64,9 +64,19 @@ if __name__ == "__main__":
     msk_m = torch.tril(torch.ones(64, 64, dtype=torch.float32)).npu()
     msk_j = torch.tril(torch.ones(64, 64, dtype=torch.float32), -1).npu()
     idt = torch.eye(64, dtype=torch.float32).npu()
-    dt_str = "float32"
-    ones_dv = _ones(64, dt_str)
-    ones_dk = _ones(64, dt_str)
-    ones_c = _ones(64, dt_str)
-    run("l0_basic_fp32", (1, 1, 64, 64, 64, "float32", "zero", False))
+    import sys as _sys
+
+    _cases = [
+        ("l0_basic_fp16", (1, 1, 64, 64, 64, "float16", "zero", False)),
+        ("l0_typical_fp16", (1, 2, 256, 64, 64, "float16", "zero", False)),
+        ("l0_basic_fp32", (1, 1, 64, 64, 64, "float32", "zero", False)),
+    ]
+    if len(_sys.argv) > 1:
+        _cases = [c for c in _cases if c[0] == _sys.argv[1]] or _cases
+    for _tag, _args in _cases:
+        dt_str = _args[5]
+        ones_dv = _ones(64, dt_str)
+        ones_dk = _ones(64, dt_str)
+        ones_c = _ones(64, dt_str)
+        run(_tag, _args)
     print("W11DIAG-DONE")

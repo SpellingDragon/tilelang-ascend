@@ -6,6 +6,9 @@
 #   mode=4: fp16 plain (control)
 #   mode=5: fp32 plain via workaround: B -> UB -> transpose -> L1, gemm tB
 #   mode=6: fp16 plain via the same workaround (control)
+#   mode=7: fp16 plain GEMM fed with the GOLDEN dqkt and K from scan2a's
+#           context -- separates "GEMM wrong on this data" from "the
+#           da_ub->io_cc->workspace_vcc->da_l1 chain corrupts dqkt".
 # Driver compares against fp64 numpy golden: nan/inf counts + max abs err.
 import sys
 
@@ -51,72 +54,100 @@ except ImportError:  # container parse: shim so the factory can compile
 
     torch.npu = _NpuShim
 
-import tilelang  # noqa: E402
-from tilelang import language as T  # noqa: E402
+_GOLDEN_ONLY = "--golden-only" in sys.argv
 
-from gdn_bwd_v2 import pass_configs  # noqa: E402
+if not _GOLDEN_ONLY:
+    import tilelang  # noqa: E402
+    from tilelang import language as T  # noqa: E402
 
+    def pass_configs():
+        from gdn_bwd_v2 import pass_configs as _pc
 
-@tilelang.jit(out_idx=[2], pass_configs=pass_configs)
-def gemm64_probe(mode, dtype="float32"):
-    M, N, K = 64, 64, 64
-    m_a, n_a = (K, M) if mode == 2 else (M, K)   # transpose_A: A is [K,M]
-    k_b, n_b = (N, K) if mode == 1 else (K, N)   # transpose_B: B is [N,K]
+        return _pc
 
-    @T.prim_func
-    def main(
-        A: T.Tensor([m_a, n_a], dtype),  # type: ignore
-        B: T.Tensor([k_b, n_b], dtype),  # type: ignore
-        C: T.Tensor([M, N], "float"),  # type: ignore
-    ):
-        with T.Kernel(1, threads=1, is_npu=True) as (cid):
-            a_l1 = T.alloc_L1([m_a, n_a], dtype)
-            b_l1 = T.alloc_L1([k_b, n_b], dtype)
-            o_l0 = T.alloc_L0C([M, N], "float")
-            T.copy(A[0, 0], a_l1)
-            if mode >= 5:
-                # workaround path: B [K,N] -> UB -> transpose -> L1 [N,K] -> tB gemm
-                b_ub = T.alloc_ub([K, N], dtype)
-                bt_ub = T.alloc_ub([N, K], dtype)
-                io_ub = T.alloc_ub([K, N], dtype)
-                bt_l1 = T.alloc_L1([N, K], dtype)
-                T.copy(B[0, 0], io_ub)
-                T.copy(io_ub, b_ub)
-                T.tile.transpose(bt_ub, b_ub)
-                T.copy(bt_ub, bt_l1)
-                T.gemm_v0(a_l1, bt_l1, o_l0, transpose_B=True, init=True)
-            else:
-                T.copy(B[0, 0], b_l1)
-                if mode == 0 or mode == 4:
-                    T.gemm_v0(a_l1, b_l1, o_l0, init=True)
+    @tilelang.jit(out_idx=[2], pass_configs=pass_configs())
+    def gemm64_probe(mode, dtype="float32"):
+        M, N, K = 64, 64, 64
+        m_a, n_a = (K, M) if mode == 2 else (M, K)   # transpose_A: A is [K,M]
+        k_b, n_b = (N, K) if mode == 1 else (K, N)   # transpose_B: B is [N,K]
+
+        @T.prim_func
+        def main(
+            A: T.Tensor([m_a, n_a], dtype),  # type: ignore
+            B: T.Tensor([k_b, n_b], dtype),  # type: ignore
+            C: T.Tensor([M, N], "float"),  # type: ignore
+        ):
+            with T.Kernel(1, threads=1, is_npu=True) as (cid):
+                a_l1 = T.alloc_L1([m_a, n_a], dtype)
+                b_l1 = T.alloc_L1([k_b, n_b], dtype)
+                o_l0 = T.alloc_L0C([M, N], "float")
+                T.copy(A[0, 0], a_l1)
+                if mode >= 5:
+                    # workaround path: B [K,N] -> UB -> transpose -> L1 [N,K] -> tB gemm
+                    b_ub = T.alloc_ub([K, N], dtype)
+                    bt_ub = T.alloc_ub([N, K], dtype)
+                    io_ub = T.alloc_ub([K, N], dtype)
+                    bt_l1 = T.alloc_L1([N, K], dtype)
+                    T.copy(B[0, 0], io_ub)
+                    T.copy(io_ub, b_ub)
+                    T.tile.transpose(bt_ub, b_ub)
+                    T.copy(bt_ub, bt_l1)
+                    T.gemm_v0(a_l1, bt_l1, o_l0, transpose_B=True, init=True)
                 else:
-                    if mode == 1:
-                        T.gemm_v0(a_l1, b_l1, o_l0, transpose_B=True, init=True)
+                    T.copy(B[0, 0], b_l1)
+                    if mode == 0 or mode == 4 or mode == 7:
+                        T.gemm_v0(a_l1, b_l1, o_l0, init=True)
                     else:
-                        T.gemm_v0(a_l1, b_l1, o_l0, transpose_A=True, init=True)
-            T.copy(o_l0, C[0, 0])
+                        if mode == 1:
+                            T.gemm_v0(a_l1, b_l1, o_l0, transpose_B=True, init=True)
+                        else:
+                            T.gemm_v0(a_l1, b_l1, o_l0, transpose_A=True, init=True)
+                T.copy(o_l0, C[0, 0])
 
-    return main
+        return main
 
 
 if __name__ == "__main__":
     mode = int(sys.argv[1])
-    dtype = "float16" if mode in (3, 4, 6) else "float32"
+    golden_only = "--golden-only" in sys.argv
+    dtype = "float16" if mode in (3, 4, 6, 7) else "float32"
     torch.manual_seed(3)
     M = N = K = 64
-    m_a, n_a = (K, M) if mode == 2 else (M, K)
-    k_b, n_b = (N, K) if mode == 1 else (K, N)
-    a = torch.randn(m_a, n_a)
-    b = torch.randn(k_b, n_b)
-    if dtype == "float16":
-        a, b = a.half(), b.half()
-    an, bn = a.double().numpy(), b.double().numpy()
-    if mode == 1:
-        gold = an @ bn.T
-    elif mode == 2:
-        gold = an.T @ bn
-    else:
+    if mode == 7:
+        # golden dqkt and K from scan2a's own context (single chunk, fp16 case)
+        from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd  # noqa: E402
+
+        (q, k, v, g, beta, h0, do), _ = _case_inputs(1, 1, 64, 64, 64, "float16", "zero", False)
+        Q, Kk, V = q[0, 0].numpy(), k[0, 0].numpy(), v[0, 0].numpy()
+        BETA, G = beta[0, 0].numpy(), g[0, 0].numpy()
+        _, cache = _np_chunk_fwd(64, 64, 64, Q, Kk, V, BETA, G, h0[0, 0].numpy(), 64)
+        c = cache[0]
+        dp = do[0, 0].numpy() @ c["vnew"].T
+        dqkt = dp * c["gam_2d"] * c["msk_m"]
+        a = torch.tensor(dqkt, dtype=torch.float16)
+        b = torch.tensor(Kk, dtype=torch.float16)
+        an, bn = a.double().numpy(), b.double().numpy()
         gold = an @ bn
+        if golden_only:
+            print(f"GOLD mode7 dqkt_max={float(abs(dqkt).max()):.3e} "
+                  f"dqkt_nonfinite={int((~np.isfinite(dqkt)).sum())} "
+                  f"gemm_max={float(np.abs(gold).max()):.3e} hf16_overflow={int((np.abs(an) > 65504).sum())}")
+            print("GEMMPROBE-GOLDEN-ONLY-DONE")
+            raise SystemExit
+    else:
+        m_a, n_a = (K, M) if mode == 2 else (M, K)
+        k_b, n_b = (N, K) if mode == 1 else (K, N)
+        a = torch.randn(m_a, n_a)
+        b = torch.randn(k_b, n_b)
+        if dtype == "float16":
+            a, b = a.half(), b.half()
+        an, bn = a.double().numpy(), b.double().numpy()
+        if mode == 1:
+            gold = an @ bn.T
+        elif mode == 2:
+            gold = an.T @ bn
+        else:
+            gold = an @ bn
     try:
         out = gemm64_probe(mode, dtype=dtype)(a.npu(), b.npu()).float().cpu().numpy()
         nan = int(np.isnan(out).sum())
