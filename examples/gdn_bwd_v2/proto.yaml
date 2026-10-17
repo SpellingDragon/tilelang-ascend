@@ -1,0 +1,78 @@
+# gdn_bwd_v2 算子接口规格（P1-1zj 设计产出；dtype 全集取自 design.md §9 精度表，机械派生）
+# 覆盖门禁用：D-DTYPE-* / D-PARAM-* 派生源。bf16 不纳入（裁决③）；变长 seq_lens 不支持（裁决④）。
+operator:
+  name: gdn_bwd_v2
+  category: Fusion
+  formula: |
+    Chunked gated delta rule backward (v2, chunked adjoint decomposition).
+    Forward per chunk (S in R^{DV x DK}, H_in = entry state):
+      gam = cumsum(g); Gam_rc = exp(gam_r - gam_c); L = J*(diag(beta)(Gam*KK^T))
+      A = (I+L)^-1; E = exp(gam); th = exp(gam_{n-1}-gam); Kt = diag(th) K
+      U0 = A (beta*V); W = A (beta*E*K); Vnew = U0 - W H_in^T
+      H_out = exp(gam_{n-1}) H_in + Vnew^T Kt
+      P = Gam*M*(Q K^T); O = diag(E)(Q H_in^T) + P Vnew
+    Backward (B1-B15, see design.md Sec 3):
+      dVnew = P^T dO + Kt Dp^T; dP = dO Vnew^T; d(QK^T) = dP*Gam*M; dGam += dP*M*(QK^T)
+      dQ += d(QK^T)K + (E*dO)H_in^T; dK += d(QK^T)^T Q + (beta*E)*t2 + th*dKt + (dX+dX^T)K
+      dV = beta*t1; dbeta = rowsum(V*t1) + E*d(betaE) + rowsum(dL*Gam*KK^T)
+      dgam sources (B5/B8/B9/B10/B12/B13) -> dg = suffix_sum(dgam); dh0 = dH(first chunk)
+    All j-contractions are T.gemm_v0 (incl. ones-GEMM for row/col sums); no per-token scalar coefficients.
+  attrs:
+    - name: chunk_size
+      type: Int
+      default: 64
+      required: false
+    - name: NT_MAX
+      type: Int
+      required: true
+    - name: BV
+      type: Int
+      default: 64
+      required: false
+    - name: BK
+      type: Int
+      default: 64
+      required: false
+  inputs:
+    - name: q
+      dtype: [float16, float32]
+    - name: k
+      dtype: [float16, float32]
+    - name: v
+      dtype: [float16, float32]
+    - name: g
+      dtype: [float32]
+    - name: beta
+      dtype: [float32]
+    - name: h0
+      dtype: [float16, float32]
+    - name: do
+      dtype: [float16, float32]
+  workspace:   # GM 跨 chunk 态（design.md Sec 8；硬约束 H3-2：递推态只走 GM）
+    - name: WS_H
+      shape: [B, H, NT_MAX + 1, DV, DK]
+      dtype: [float16]
+    - name: WS_A
+      shape: [B, H, NT_MAX, C, C]
+      dtype: [float16]
+    - name: WS_G
+      shape: [B, H, T]
+      dtype: [float32]
+    - name: WS_D
+      shape: [B, H, DV, DK]
+      dtype: [float32]
+  outputs:
+    - name: dq
+      dtype: [float16, float32]
+    - name: dk
+      dtype: [float16, float32]
+    - name: dv
+      dtype: [float16, float32]
+    - name: dbeta
+      dtype: [float32]
+    - name: dg
+      dtype: [float32]
+    - name: dh0
+      dtype: [float16, float32]
+  schema: gdn_bwd_v2(Tensor q, Tensor k, Tensor v, Tensor g, Tensor beta, Tensor h0, Tensor do, int chunk_size=64, int NT_MAX) -> (Tensor dq, Tensor dk, Tensor dv, Tensor dbeta, Tensor dg, Tensor dh0)
+# 一致性约束：inputs[].dtype ∪ outputs[].dtype 全集 = {float16, float32} = design.md §9 精度表 dtype 行。

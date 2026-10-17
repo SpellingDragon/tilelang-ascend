@@ -1,0 +1,109 @@
+S7B-COMPILE-L0-float16-cumsum OK src=2421
+S7B-COMPILE-L0-float16-solve_a OK src=10255
+S7B-COMPILE-L0-float16 FAIL TVMError: Traceback (most recent call last):
+  21: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::IRModule (tvm::transform::Pass, tvm::IRModule)>::AssignTypedLambda<tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}>(tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, tvm::runtime::TVMRetValue)
+  20: tvm::transform::Pass::operator()(tvm::IRModule) const
+  19: tvm::transform::Pass::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  18: tvm::tir::transform::PrimFuncPassNode::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  17: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::tir::PrimFunc (tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)>::AssignTypedLambda<tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1}>(tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1})::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)
+  16: tvm::tl::CombineCV::Substitute(tvm::tir::PrimFunc, tvm::transform::PassContext)
+  15: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  14: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  13: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  12: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  11: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#18}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  10: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::BlockNode const*)
+  9: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  8: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  7: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  6: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  5: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  4: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  3: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  2: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  1: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  0: tvm::tl::AutoInsertCrossCoreSync::AutoInsert(tvm::tir::Stmt&, tvm::tir::Stmt&)
+  File "/tlasc/src/transform/ascend_combinecv.cc", line 380
+TVMError: Mismatch in sync points between cube and vec for workspace workspace_10: cube has 1, vec has 0
+S7B-COMPILE-L0-float32-cumsum OK src=2421
+S7B-COMPILE-L0-float32-solve_a OK src=10339
+S7B-COMPILE-L0-float32 FAIL TVMError: Traceback (most recent call last):
+  21: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::IRModule (tvm::transform::Pass, tvm::IRModule)>::AssignTypedLambda<tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}>(tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, tvm::runtime::TVMRetValue)
+  20: tvm::transform::Pass::operator()(tvm::IRModule) const
+  19: tvm::transform::Pass::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  18: tvm::tir::transform::PrimFuncPassNode::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  17: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::tir::PrimFunc (tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)>::AssignTypedLambda<tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1}>(tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1})::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)
+  16: tvm::tl::CombineCV::Substitute(tvm::tir::PrimFunc, tvm::transform::PassContext)
+  15: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  14: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  13: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  12: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  11: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#18}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  10: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::BlockNode const*)
+  9: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  8: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  7: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  6: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  5: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  4: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  3: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  2: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  1: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  0: tvm::tl::AutoInsertCrossCoreSync::AutoInsert(tvm::tir::Stmt&, tvm::tir::Stmt&)
+  File "/tlasc/src/transform/ascend_combinecv.cc", line 380
+TVMError: Mismatch in sync points between cube and vec for workspace workspace_10: cube has 1, vec has 0
+S7B-COMPILE-TSC-float16-cumsum OK src=2422
+S7B-COMPILE-TSC-float16-solve_a OK src=10792
+S7B-COMPILE-TSC-float16 FAIL TVMError: Traceback (most recent call last):
+  21: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::IRModule (tvm::transform::Pass, tvm::IRModule)>::AssignTypedLambda<tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}>(tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, tvm::runtime::TVMRetValue)
+  20: tvm::transform::Pass::operator()(tvm::IRModule) const
+  19: tvm::transform::Pass::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  18: tvm::tir::transform::PrimFuncPassNode::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  17: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::tir::PrimFunc (tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)>::AssignTypedLambda<tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1}>(tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1})::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)
+  16: tvm::tl::CombineCV::Substitute(tvm::tir::PrimFunc, tvm::transform::PassContext)
+  15: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  14: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  13: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  12: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  11: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#18}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  10: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::BlockNode const*)
+  9: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  8: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  7: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  6: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  5: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  4: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  3: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  2: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  1: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  0: tvm::tl::AutoInsertCrossCoreSync::AutoInsert(tvm::tir::Stmt&, tvm::tir::Stmt&)
+  File "/tlasc/src/transform/ascend_combinecv.cc", line 380
+TVMError: Mismatch in sync points between cube and vec for workspace workspace_10: cube has 1, vec has 0
+S7B-COMPILE-TSC-float32-cumsum OK src=2422
+S7B-COMPILE-TSC-float32-solve_a OK src=10876
+S7B-COMPILE-TSC-float32 FAIL TVMError: Traceback (most recent call last):
+  21: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::IRModule (tvm::transform::Pass, tvm::IRModule)>::AssignTypedLambda<tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}>(tvm::transform::__mk_TVM9::{lambda(tvm::transform::Pass, tvm::IRModule)#1}, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >)::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, tvm::runtime::TVMRetValue)
+  20: tvm::transform::Pass::operator()(tvm::IRModule) const
+  19: tvm::transform::Pass::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  18: tvm::tir::transform::PrimFuncPassNode::operator()(tvm::IRModule, tvm::transform::PassContext const&) const
+  17: tvm::runtime::PackedFuncObj::Extractor<tvm::runtime::PackedFuncSubObj<tvm::runtime::TypedPackedFunc<tvm::tir::PrimFunc (tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)>::AssignTypedLambda<tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1}>(tvm::tl::CombineCV()::{lambda(tvm::tir::PrimFunc, tvm::IRModule, tvm::transform::PassContext)#1})::{lambda(tvm::runtime::TVMArgs const&, tvm::runtime::TVMRetValue*)#1}> >::Call(tvm::runtime::PackedFuncObj const*, tvm::runtime::TVMArgs, tvm::runtime::TVMRetValue*)
+  16: tvm::tl::CombineCV::Substitute(tvm::tir::PrimFunc, tvm::transform::PassContext)
+  15: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  14: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  13: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  12: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  11: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#18}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  10: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::BlockNode const*)
+  9: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  8: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  7: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  6: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  5: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#2}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  4: tvm::arith::IRMutatorWithAnalyzer::VisitStmt_(tvm::tir::AttrStmtNode const*)
+  3: tvm::tir::StmtMutator::VisitStmt(tvm::tir::Stmt const&)
+  2: tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>::InitVTable()::{lambda(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)#19}::_FUN(tvm::runtime::ObjectRef const&, tvm::tir::StmtFunctor<tvm::tir::Stmt (tvm::tir::Stmt const&)>*)
+  1: tvm::tl::CombineCV::VisitStmt_(tvm::tir::BlockRealizeNode const*)
+  0: tvm::tl::AutoInsertCrossCoreSync::AutoInsert(tvm::tir::Stmt&, tvm::tir::Stmt&)
+  File "/tlasc/src/transform/ascend_combinecv.cc", line 380
+TVMError: Mismatch in sync points between cube and vec for workspace workspace_10: cube has 1, vec has 0
+S7B-FAIL

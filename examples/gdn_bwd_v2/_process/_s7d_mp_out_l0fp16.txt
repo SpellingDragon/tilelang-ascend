@@ -1,0 +1,107 @@
+S7D-MPMODEL-scan-L0-fp16 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan-L0-fp16 scope-distribution {'shared.l1': 18, 'wmma.accumulator': 26, 'shared.ub': 83} n_alloc=127
+S7D-MPMODEL-scan-L0-fp16 walk-stats n_alloc_tracked=127 n_linear=424 n_first_use=127 n_touch_names=127
+S7D-MPMODEL-scan-L0-fp16 modelA-faithful OK usage=196288/196352
+S7D-MPMODEL-scan-L0-fp16 modelB-stmt-level OK usage=196288/196352
+S7D-MPMODEL-scan-L0-fp16 ---- UB interval table (modelA) ----
+  hin_ub: [109, 420], size=16384, stmt-reach=[109, 280] KILL-DISPLACED old=280 new=419 genL=0 killL=1 claimed-kill 420 > stmt-reach 280
+  io_hv1: [110, 419], size=8192, stmt-reach=[110, 173] KILL-DISPLACED old=173 new=419 genL=0 killL=1 claimed-kill 419 > stmt-reach 173
+  g_ub: [115, 420], size=256, stmt-reach=[115, 192] claimed-kill 420 > stmt-reach 192
+  be_ub: [116, 420], size=256, stmt-reach=[116, 358] KILL-DISPLACED old=358 new=419 genL=1 killL=2 claimed-kill 420 > stmt-reach 358
+  zero_ub: [117, 420], size=256, stmt-reach=[117, 188] claimed-kill 420 > stmt-reach 188
+  e_ub: [120, 420], size=256, stmt-reach=[120, 401] claimed-kill 420 > stmt-reach 401
+  glast_ub: [123, 420], size=32, stmt-reach=[123, 276] KILL-DISPLACED old=276 new=419 genL=1 killL=2 claimed-kill 420 > stmt-reach 276
+  th_ub: [124, 420], size=256, stmt-reach=[124, 395] claimed-kill 420 > stmt-reach 395
+  bee_ub: [129, 420], size=256, stmt-reach=[129, 314] KILL-DISPLACED old=314 new=419 genL=1 killL=2 claimed-kill 420 > stmt-reach 314
+  xk1_ub: [130, 147], size=16384, stmt-reach=[130, 147] 
+  io_xk1: [131, 148], size=8192, stmt-reach=[131, 148] 
+  bq1_ub: [149, 164], size=16384, stmt-reach=[149, 164] 
+  io_bq1: [150, 166], size=8192, stmt-reach=[150, 166] 
+  wh1_ub: [163, 165], size=16384, stmt-reach=[163, 165] 
+  dh1_ub: [170, 171], size=16384, stmt-reach=[170, 171] 
+  g_ub_broadcast_0_data: [191, 193], size=16384, stmt-reach=[191, 193] 
+  broadcast_workspace_1_data: [191, 191], size=8192, stmt-reach=[191, 191] 
+  g_ub_broadcast_2_data: [192, 193], size=16384, stmt-reach=[192, 193] 
+  broadcast_workspace_3_data: [192, 192], size=8192, stmt-reach=[192, 192] 
+  gm_ub: [193, 367], size=16384, stmt-reach=[193, 367] 
+  io_xk: [195, 216], size=8192, stmt-reach=[195, 216] 
+  k2_ub: [196, 419], size=16384, stmt-reach=[196, 205] KILL-DISPLACED old=205 new=419 genL=1 killL=2 claimed-kill 419 > stmt-reach 205
+  xk_ub: [200, 215], size=16384, stmt-reach=[200, 215] 
+  kk_ub: [217, 360], size=16384, stmt-reach=[217, 360] 
+  pk_ub: [218, 223], size=16384, stmt-reach=[218, 223] 
+  mul_ub: [219, 335], size=16384, stmt-reach=[219, 335] 
+  msk_ub: [220, 222], size=16384, stmt-reach=[220, 222] 
+  io_cc1: [223, 224], size=8192, stmt-reach=[223, 224] 
+  dE_ub: [225, 401], size=256, stmt-reach=[225, 401] 
+  dgam_ub: [226, 419], size=256, stmt-reach=[226, 407] KILL-DISPLACED old=407 new=419 genL=1 killL=2 claimed-kill 419 > stmt-reach 407
+  tmp1_ub: [227, 416], size=256, stmt-reach=[227, 416] 
+  dbe_ub: [228, 328], size=256, stmt-reach=[228, 328] 
+  bq_ub: [229, 270], size=16384, stmt-reach=[229, 270] 
+  io_bq: [230, 273], size=8192, stmt-reach=[230, 273] 
+  io_hv: [233, 241], size=8192, stmt-reach=[233, 241] 
+  dhp_ub: [237, 279], size=16384, stmt-reach=[237, 279] 
+  wh_ub: [242, 254], size=16384, stmt-reach=[242, 254] 
+  t1_ub: [251, 258], size=16384, stmt-reach=[251, 258] 
+  rs_ub: [260, 419], size=4096, stmt-reach=[260, 388] KILL-DISPLACED old=388 new=419 genL=1 killL=2 claimed-kill 419 > stmt-reach 388
+  dvnew_ub: [266, 272], size=16384, stmt-reach=[266, 272] 
+  dh_ub: [274, 285], size=16384, stmt-reach=[274, 285] 
+  dh_ub_tmp_4_data: [276, 277], size=256, stmt-reach=[276, 277] 
+  red1_ub: [280, 281], size=256, stmt-reach=[280, 281] 
+  tmp_ub: [280, 398], size=4384, stmt-reach=[280, 398] 
+  rowb_ub: [281, 282], size=256, stmt-reach=[281, 282] 
+  scal_ub: [282, 398], size=32, stmt-reach=[282, 398] 
+  io_hv2: [285, 286], size=8192, stmt-reach=[285, 286] 
+  t1b_ub: [289, 302], size=16384, stmt-reach=[289, 302] 
+  io_bq2: [290, 303], size=8192, stmt-reach=[290, 303] 
+  wh2_ub: [291, 293], size=16384, stmt-reach=[291, 293] 
+  xk2a_ub: [304, 310], size=16384, stmt-reach=[304, 310] 
+  io_xk2a: [310, 311], size=8192, stmt-reach=[310, 311] 
+  xk2b_ub: [312, 316], size=16384, stmt-reach=[312, 316] 
+  dk_ub: [316, 414], size=16384, stmt-reach=[316, 414] 
+  k2b_ub: [317, 319], size=16384, stmt-reach=[317, 319] 
+  xk2c_ub: [318, 320], size=16384, stmt-reach=[318, 320] 
+  io_xk2b: [320, 321], size=8192, stmt-reach=[320, 321] 
+  dE_ub_tmp_5_data: [326, 327], size=256, stmt-reach=[326, 327] 
+  tmp1_ub_tmp_6_data: [328, 329], size=256, stmt-reach=[328, 329] 
+  pk2_ub: [330, 334], size=16384, stmt-reach=[330, 334] 
+  msk2_ub: [331, 334], size=16384, stmt-reach=[331, 334] 
+  da_ub: [332, 336], size=16384, stmt-reach=[332, 336] 
+  dgam2_ub: [334, 374], size=16384, stmt-reach=[334, 374] 
+  io_cc: [336, 376], size=8192, stmt-reach=[336, 376] 
+  da2_ub: [338, 339], size=16384, stmt-reach=[338, 339] 
+  dx_ub: [341, 365], size=16384, stmt-reach=[341, 365] 
+  msk3_ub: [347, 348], size=16384, stmt-reach=[347, 348] 
+  da3_ub: [349, 351], size=16384, stmt-reach=[349, 351] 
+  mul2_ub: [358, 364], size=16384, stmt-reach=[358, 364] 
+  dgam2_ub_tmp_7_data: [360, 361], size=16384, stmt-reach=[360, 361] 
+  mul3_ub: [374, 375], size=16384, stmt-reach=[374, 375] 
+  k2c_ub: [381, 383], size=16384, stmt-reach=[381, 383] 
+  xk3a_ub: [382, 384], size=16384, stmt-reach=[382, 384] 
+  io_xk3: [384, 385], size=8192, stmt-reach=[384, 385] 
+  xk3b_ub: [390, 394], size=16384, stmt-reach=[390, 394] 
+  tmp2_ub: [395, 418], size=256, stmt-reach=[395, 418] 
+  rowc_ub: [397, 398], size=256, stmt-reach=[397, 398] 
+  dgam_ub_tmp_8_data: [401, 402], size=256, stmt-reach=[401, 402] 
+  dq_ub: [409, 410], size=16384, stmt-reach=[409, 410] 
+  io_xk4: [410, 411], size=8192, stmt-reach=[410, 411] 
+  xk4_ub: [412, 413], size=16384, stmt-reach=[412, 413] 
+  io_xk5: [414, 415], size=8192, stmt-reach=[414, 415] 
+  io_1d: [416, 419], size=128, stmt-reach=[416, 419] 
+S7D-MPMODEL-scan-L0-fp16 ---- IR excerpt: displaced buffers' touches ----
+  dgam_ub touch@226: dgam_ub = T.handle("float32", "shared.ub")
+  dgam_ub touch@407: tmp2_ub = T.Buffer((64,), scope="shared.ub")
+  rs_ub touch@260: workspace_lc16 = T.handle("float32", "global")
+  rs_ub touch@388: tmp2_ub = T.Buffer((64,), scope="shared.ub")
+  be_ub touch@116: be_ub = T.handle("float32", "shared.ub")
+  be_ub touch@358: mul2_ub = T.handle("float32", "shared.ub")
+  bee_ub touch@129: bee_ub = T.handle("float32", "shared.ub")
+  bee_ub touch@314: xk2b_ub = T.handle("float32", "shared.ub")
+  hin_ub touch@109: hin_ub = T.handle("float32", "shared.ub")
+  hin_ub touch@280: red1_ub = T.handle("float32", "shared.ub")
+  glast_ub touch@123: glast_ub = T.handle("float32", "shared.ub")
+  glast_ub touch@276: dh_ub_tmp_4_data = T.handle("float32", "shared.ub")
+  k2_ub touch@196: io_xk = T.handle("float16", "shared.ub")
+  k2_ub touch@205: xk_ub = T.handle("float32", "shared.ub")
+  io_hv1 touch@110: H0 = T.handle("float16", "global")
+  io_hv1 touch@173: io_hv1 = T.handle("float16", "shared.ub")
+S7D-MPMODEL-scan-L0-fp16 DONE

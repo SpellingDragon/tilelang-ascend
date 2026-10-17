@@ -1,0 +1,321 @@
+      }
+    }
+
+    void PlanMemory() {
+      LivenessAnalysis();
+      CollectLoopInfo();
+
+      std::unordered_map<std::string, std::vector<const VarNode *>>
+          scope_groups;
+      for (const auto &kv : buffer_scopes_) {
+        scope_groups[kv.second].push_back(kv.first);
+      }
+
+      DLOG(DEBUG) << "Memory planning by scope groups:";
+      for (const auto &kv : scope_groups) {
+        DLOG(DEBUG) << "  Scope " << kv.first << ": " << kv.second.size()
+                    << " buffers";
+      }
+
+      for (const auto &scope_kv : scope_groups) {
+        if (memory_auto_plan)
+          PlanMemoryForScope(scope_kv.first, scope_kv.second);
+        else
+          PlanMemoryForScopeLinear(scope_kv.first, scope_kv.second);
+      }
+    }
+
+    void LivenessAnalysis() {
+      std::unordered_set<const VarNode *> touched;
+      for (size_t i = linear_seq_.size(); i != 0; --i) {
+        const StmtEntry &s = linear_seq_[i - 1];
+        for (const VarNode *buffer : s.touched) {
+          if (!touched.count(buffer)) {
+            touched.insert(buffer);
+            event_map_[s.stmt].kill.push_back(buffer);
+          }
+        }
+      }
+
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        const StmtEntry &s = linear_seq_[i];
+        for (const VarNode *buffer : s.touched) {
+          if (first_use_.count(buffer) && first_use_[buffer] == i) {
+            event_map_[s.stmt].gen.push_back(buffer);
+          }
+        }
+      }
+
+      ReorderKillPoints();
+
+      DLOG(DEBUG) << "Liveness Analysis Results:";
+      for (const auto &event_pair : event_map_) {
+        const EventEntry &entry = event_pair.second;
+        if (entry.gen.empty() && entry.kill.empty())
+          continue;
+
+        std::stringstream gen_ss, kill_ss;
+        for (const VarNode *var : entry.gen)
+          gen_ss << var->name_hint << " ";
+        for (const VarNode *var : entry.kill)
+          kill_ss << var->name_hint << " ";
+
+        DLOG(DEBUG) << "  Statement: " << event_pair.first->GetTypeKey();
+        if (!entry.gen.empty())
+          DLOG(DEBUG) << "    GEN: " << gen_ss.str();
+        if (!entry.kill.empty())
+          DLOG(DEBUG) << "    KILL: " << kill_ss.str();
+      }
+    }
+
+    void ReorderKillPoints() {
+      std::vector<StmtEntry> gen_kill_seq;
+      for (const auto &stmt_entry : linear_seq_) {
+        if (!event_map_[stmt_entry.stmt].gen.empty() ||
+            !event_map_[stmt_entry.stmt].kill.empty()) {
+          gen_kill_seq.push_back(stmt_entry);
+        }
+      }
+
+      for (auto &event_pair : event_map_) {
+        const Object *stmt = event_pair.first;
+        EventEntry &event = event_pair.second;
+
+        if (event.kill.empty())
+          continue;
+
+        ICHECK(stmt_attrs_.count(stmt));
+        int kill_level = stmt_attrs_.at(stmt).level;
+
+        std::unordered_set<const VarNode *> visited_buffers;
+
+        for (auto it = event.kill.begin(); it != event.kill.end();) {
+          const VarNode *buffer = *it;
+          bool found_gen = false;
+          int gen_level = 0;
+
+          for (const auto &gen_pair : event_map_) {
+            const auto &gen_event = gen_pair.second;
+            if (std::find(gen_event.gen.begin(), gen_event.gen.end(), buffer) !=
+                gen_event.gen.end()) {
+              found_gen = true;
+              gen_level = stmt_attrs_.at(gen_pair.first).level;
+              break;
+            }
+          }
+
+          if (found_gen && kill_level > gen_level) {
+            if (visited_buffers.count(buffer)) {
+              ++it;
+              continue;
+            }
+
+            it = event.kill.erase(it);
+
+            const Object *last_stmt_at_level = nullptr;
+            auto stmt_it = gen_kill_seq.begin();
+            for (; stmt_it != gen_kill_seq.end(); ++stmt_it) {
+              if (stmt_it->stmt == stmt) {
+                break;
+              }
+            }
+
+            for (; stmt_it != gen_kill_seq.end(); ++stmt_it) {
+              auto next_it = stmt_it + 1;
+              if (next_it == gen_kill_seq.end() ||
+                  stmt_attrs_.at(next_it->stmt).level == gen_level - 1) {
+                last_stmt_at_level = stmt_it->stmt;
+                break;
+              }
+            }
+
+            if (last_stmt_at_level) {
+              event_map_[last_stmt_at_level].kill.push_back(buffer);
+              visited_buffers.insert(buffer);
+            }
+          } else {
+            ++it;
+          }
+        }
+      }
+    }
+
+    int64_t FindEventIndex(const VarNode *buffer, bool use_gen) {
+      for (const auto &event_pair : event_map_) {
+        const EventEntry &event = event_pair.second;
+        const auto &vec = use_gen ? event.gen : event.kill;
+        auto it = std::find(vec.begin(), vec.end(), buffer);
+        if (it != vec.end()) {
+          for (size_t i = 0; i < linear_seq_.size(); ++i) {
+            if (linear_seq_[i].stmt == event_pair.first) {
+              return static_cast<int64_t>(i);
+            }
+          }
+          break;
+        }
+      }
+      return -1;
+    }
+
+    /*!
+     * \brief Collect loop intervals and buffer touch indices for
+     *        loop-aware liveness extension.
+     *
+     * After LivenessAnalysis, the KILL point of a buffer is set to its
+     * last touch in the linearized IR.  However, when a buffer is
+     * defined *before* a loop and touched *inside* the loop body, it
+     * is actually live across every iteration — its real KILL should
+     * be the loop's end, not the textual last touch inside the body.
+     *
+     * This method pre-computes:
+     *   1. loop_intervals_  — [begin, end] index pairs for every
+     *      ForNode / WhileNode in linear_seq_.
+     *   2. buffer_touch_indices_ — for every buffer, a sorted set of
+     *      all linear_seq_ indices where it is touched.
+     */
+    void CollectLoopInfo() {
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        const StmtEntry &s = linear_seq_[i];
+        if (s.scope_pair_offset > 0 && s.stmt &&
+            (s.stmt->IsInstance<ForNode>() ||
+             s.stmt->IsInstance<WhileNode>())) {
+          int64_t begin = static_cast<int64_t>(i);
+          int64_t end = begin + s.scope_pair_offset;
+          loop_intervals_.push_back({begin, end});
+        }
+      }
+
+      for (size_t i = 0; i < linear_seq_.size(); ++i) {
+        for (const VarNode *buf : linear_seq_[i].touched) {
+          buffer_touch_indices_[buf].insert(static_cast<int64_t>(i));
+        }
+      }
+    }
+
+    /*!
+     * \brief Extend a buffer's KILL index to cover loops in which it
+     *        is live across iterations.
+     *
+     * The linearized IR represents a loop body as a single pass, so the
+     * liveness analysis computes a buffer's KILL as the last touch
+     * *within one iteration*.  However, when a buffer is defined
+     * *before* a loop and touched *inside* the loop body, it is
+     * actually live across every iteration — its real KILL should be
+     * the loop's end, not the textual last touch inside the body.
+     *
+     * This handles the case where a buffer (e.g. index_ub) is
+     * initialized once before a segment loop and read in every
+     * iteration.  Without this extension, the planner may reuse the
+     * buffer's memory for another buffer (e.g. merged_ub) that is
+     * written inside the same loop, causing silent data corruption.
+     *
+     * For each loop [loop_begin, loop_end] where:
+     *   - GEN < loop_begin  (buffer defined before the loop)
+     *   - loop_begin <= KILL < loop_end  (buffer's last touch is inside)
+     * the KILL is extended to loop_end.  This applies to all enclosing
+     * loops, so we take the maximum loop_end.
+     */
+    int64_t ExtendKillIndex(const VarNode *buffer, int64_t gen_idx,
+                            int64_t kill_idx) {
+      if (kill_idx < 0) {
+        return kill_idx;
+      }
+      auto it = buffer_touch_indices_.find(buffer);
+      if (it == buffer_touch_indices_.end()) {
+        return kill_idx;
+      }
+      const std::set<int64_t> &touches = it->second;
+
+      int64_t extended = kill_idx;
+      for (const auto &loop : loop_intervals_) {
+        int64_t loop_begin = loop.first;
+        int64_t loop_end = loop.second;
+
+        if (gen_idx < loop_begin && kill_idx >= loop_begin &&
+            kill_idx < loop_end) {
+          auto touch_it = touches.upper_bound(loop_begin);
+          if (touch_it != touches.end() && *touch_it < loop_end) {
+            extended = std::max(extended, loop_end);
+          }
+        }
+      }
+      return extended;
+    }
+
+    void PlanMemoryForScope(const std::string &scope,
+                            const std::vector<const VarNode *> &buffers) {
+      DLOG(DEBUG) << "Planning memory for scope: " << scope;
+
+      std::vector<LiveInterval> intervals;
+      std::unordered_map<const VarNode *, int64_t> pre_alloc_scope_buffer;
+      for (const VarNode *buffer : buffers) {
+        if (pre_alloc_buffer_.count(buffer->name_hint) > 0) {
+          pre_alloc_scope_buffer[buffer] = pre_alloc_buffer_[buffer->name_hint];
+        };
+
+        int64_t start = FindEventIndex(buffer, true);
+        int64_t end = FindEventIndex(buffer, false);
+
+        if (start != -1 && end != -1) {
+          end = ExtendKillIndex(buffer, start, end);
+          intervals.emplace_back(buffer, start, end, buffer_sizes_[buffer]);
+          DLOG(DEBUG) << "Buffer " << buffer->name_hint << ": [" << start
+                      << ", " << end << "], size=" << buffer_sizes_[buffer];
+        }
+      }
+
+      std::sort(intervals.begin(), intervals.end(),
+                [](const LiveInterval &a, const LiveInterval &b) {
+                  return a.start < b.start;
+                });
+
+      LinearScanAllocator allocator(memory_limits_[scope],
+                                    pre_alloc_scope_buffer);
+      auto allocations = allocator.allocate(intervals);
+
+      for (const auto &alloc : allocations) {
+        address_map_[alloc.buffer] = alloc.offset;
+        DLOG(DEBUG) << "Allocated buffer " << alloc.buffer->name_hint
+                    << " at offset " << alloc.offset << " (size=" << alloc.size
+                    << ")";
+      }
+
+      size_t total_used = 0;
+      for (const auto &alloc : allocations) {
+        total_used = std::max(total_used, alloc.offset + alloc.size);
+      }
+
+      DLOG(DEBUG) << "Scope " << scope << " memory usage: " << total_used << "/"
+                  << memory_limits_[scope] << " bytes ("
+                  << (total_used * 100.0 / memory_limits_[scope]) << "%)";
+      if (total_used > memory_limits_[scope]) {
+        DLOG(WARNING) << "Memory limit exceeded for scope " << scope << ": "
+                      << total_used << " > " << memory_limits_[scope];
+      }
+    }
+
+    void PlanMemoryForScopeLinear(const std::string &scope,
+                                  const std::vector<const VarNode *> &buffers) {
+      bool check_overflow = false; // reserve memory overflow check
+      int64_t current_offset = 0;
+      int64_t max_offset = 0;
+
+      // Allocate origin buffer first, then tmp buffer in shared memory
+      auto alloc_buffer = [&](const VarNode *buffer, int64_t &offset,
+                              const std::string &err_prefix) -> bool {
+        int64_t buf_size = buffer_sizes_[buffer];
+        if (offset + buf_size > memory_limits_[scope] && check_overflow) {
+          LOG(FATAL) << err_prefix << " Out of memory in scope: " << scope
+                     << "\nBuffer: " << buffer->name_hint
+                     << "\nRequired size: " << buf_size
+                     << "\nCurrent offset: " << offset
+                     << "\nMemory limit: " << memory_limits_[scope];
+          return false;
+        }
+        address_map_[buffer] = offset;
+        offset = static_cast<int64_t>(AlignUp(offset + buf_size, 32));
+        return true;
+      };
+
+      for (const VarNode *buffer : origin_buffer) {
+        if (std::find(buffers.begin(), buffers.end(), buffer) ==

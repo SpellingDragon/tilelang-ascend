@@ -1,0 +1,340 @@
+class AscendLowerParallelToVector : public arith::IRMutatorWithAnalyzer {
+public:
+  static PrimFunc Substitute(PrimFunc f) {
+    arith::Analyzer analyzer;
+    AscendLowerParallelToVector substituter(&analyzer);
+    PrimFuncNode *fptr = f.CopyOnWrite();
+    fptr->body = substituter.VisitStmt(f->body);
+    return GetRef<PrimFunc>(fptr);
+  }
+
+private:
+  using arith::IRMutatorWithAnalyzer::IRMutatorWithAnalyzer;
+
+  const VarNode *vector_dim_var_ = nullptr;
+  const VarNode *outer_dim_var_ = nullptr;
+  bool is_2d_vectorizing_ = false;
+  int temp_buffer_id_ = 0;
+  std::vector<Buffer> temp_buffers_;
+  int64_t vector_dim_extent_{
+      0};                       // Track the extent of the vector dimension loop
+  int64_t outer_dim_extent_{0}; // Track the extent of the outer dimension loop
+
+  Buffer CreateTempBufferLike(const Buffer &ref, int64_t num_elements,
+                              int64_t inner_vec_len = 0) {
+    DataType dtype = ref->dtype;
+
+    if (num_elements < 0) {
+      LOG(FATAL) << "Cannot create temp buffer for non-constant shape.";
+      return Buffer();
+    }
+
+    Var data(ref->name + "_tmp_" + std::to_string(temp_buffer_id_++) + "_data",
+             PointerType(PrimType(dtype), "shared.ub"));
+
+    // Determine the shape based on the actual computation size (loop extent)
+    Array<PrimExpr> shape;
+    if (ref->shape.size() == 1) {
+      // 1D case: just the total elements
+      shape.push_back(IntImm(DataType::Int(32), num_elements));
+    } else if (ref->shape.size() >= 2) {
+      // 2D or higher: use the computation dimensions
+      // If inner_vec_len is provided, use it to determine the shape
+      if (inner_vec_len > 0) {
+        int64_t outer_extent = num_elements / inner_vec_len;
+        shape.push_back(IntImm(DataType::Int(32), outer_extent));
+        shape.push_back(IntImm(DataType::Int(32), inner_vec_len));
+      } else {
+        // Fall back to 1D if we can't determine 2D shape
+        shape.push_back(IntImm(DataType::Int(32), num_elements));
+      }
+    }
+
+    Buffer buf = Buffer(data, dtype, shape,
+                        /*strides=*/{},
+                        /*elem_offset=*/PrimExpr(0),
+                        /*name=*/data->name_hint,
+                        /*data_alignment=*/0,
+                        /*offset_factor=*/0,
+                        /*buffer_type=*/kDefault);
+
+    temp_buffers_.push_back(buf);
+    return buf;
+  }
+
+  class ReplaceVarExpr : public StmtExprMutator {
+  public:
+    const VarNode *from_;
+    Var to_;
+    explicit ReplaceVarExpr(const VarNode *from, Var to)
+        : from_(from), to_(to) {}
+
+    PrimExpr VisitExpr_(const VarNode *op) override {
+      if (op == from_) {
+        return to_;
+      }
+      return GetRef<PrimExpr>(op);
+    }
+
+    Stmt VisitStmt_(const ForNode *op) override {
+      return StmtExprMutator::VisitStmt_(op);
+    }
+  };
+
+  // Substitute loop variables with constants in expressions
+  class SubstituteLoopVars : public ExprMutator {
+  public:
+    const VarNode *vector_dim_var_;
+    const VarNode *outer_dim_var_;
+    bool is_2d_vectorizing_;
+
+    explicit SubstituteLoopVars(const VarNode *vector_dim_var,
+                                const VarNode *outer_dim_var,
+                                bool is_2d_vectorizing)
+        : vector_dim_var_(vector_dim_var), outer_dim_var_(outer_dim_var),
+          is_2d_vectorizing_(is_2d_vectorizing) {}
+
+    PrimExpr VisitExpr_(const VarNode *op) override {
+      // Replace vector dim var with 0
+      if (vector_dim_var_ != nullptr && op == vector_dim_var_) {
+        return IntImm(DataType::Int(32), 0);
+      }
+      // Replace outer dim var with 0 if 2d vectorizing
+      if (is_2d_vectorizing_ && outer_dim_var_ != nullptr &&
+          op == outer_dim_var_) {
+        return IntImm(DataType::Int(32), 0);
+      }
+      return GetRef<PrimExpr>(op);
+    }
+  };
+
+  Stmt VisitStmt_(const ForNode *op) override {
+    // Sequence of store statements (handles both single stores and sequences)
+    auto TryVectorizeStoreSeq =
+        [&](Stmt stmt, PrimExpr total_elements,
+            const std::unordered_set<const VarNode *> &parallel_vars,
+            bool has_outer_serial, const VarNode *vector_dim,
+            const VarNode *outer_dim = nullptr) -> Stmt {
+      int64_t element_count = 0;
+      if (!TryGetElementCount(total_elements, &element_count))
+        return Stmt();
+      const VarNode *old_vector = vector_dim_var_;
+      const VarNode *old_outer = outer_dim_var_;
+      vector_dim_var_ = vector_dim;
+      outer_dim_var_ = outer_dim;
+
+      Stmt v = TryVectorizeBufferStoreSeq(stmt, element_count, parallel_vars,
+                                          has_outer_serial);
+
+      vector_dim_var_ = old_vector;
+      outer_dim_var_ = old_outer;
+      return v;
+    };
+
+    // Parallel cases
+    if (op->kind == ForKind::kParallel) {
+      // parallel -> (store | seq)
+      {
+        if (op->body.as<BufferStoreNode>() || op->body.as<SeqStmtNode>()) {
+          int64_t extent = 0;
+          if (TryGetElementCount(op->extent, &extent)) {
+            vector_dim_extent_ = extent;
+            outer_dim_extent_ = 1;
+          }
+          Stmt v =
+              TryVectorizeStoreSeq(op->body, op->extent, {op->loop_var.get()},
+                                   false, op->loop_var.as<VarNode>());
+          vector_dim_extent_ = 0;
+          outer_dim_extent_ = 0;
+          if (v.defined())
+            return v;
+        }
+      }
+
+      // parallel -> parallel -> (store | seq)
+      const auto *inner_for = op->body.as<ForNode>();
+      if (!inner_for || inner_for->kind != ForKind::kParallel) {
+        // Not a 2D parallel nest and the 1D path above could not vectorize it:
+        // lower this parallel loop to serial. Ascend has no native
+        // parallel-for, so a surviving kParallel would reach codegen and trip
+        // "Find undefined Variable v_thread".
+        auto serial = make_object<ForNode>(*op);
+        serial->kind = ForKind::kSerial;
+        serial->body = VisitStmt(op->body);
+        return Stmt(serial);
+      }
+
+      const auto *third_for = inner_for->body.as<ForNode>();
+      if (third_for && third_for->kind == ForKind::kParallel) {
+        LOG(FATAL)
+            << "Unsupported: 3D or higher dimensional parallel loops detected. "
+            << "Only 1D and 2D parallel loops are supported for T.Parallel.";
+      }
+
+      PrimExpr total_elements = inner_for->extent * op->extent;
+      std::unordered_set<const VarNode *> parallel_vars = {
+          op->loop_var.get(), inner_for->loop_var.get()};
+
+      if (inner_for->body.as<BufferStoreNode>() ||
+          inner_for->body.as<SeqStmtNode>()) {
+        int64_t inner_extent = 0;
+        int64_t outer_extent = 0;
+        if (TryGetElementCount(inner_for->extent, &inner_extent) &&
+            TryGetElementCount(op->extent, &outer_extent)) {
+          vector_dim_extent_ = inner_extent;
+          outer_dim_extent_ = outer_extent;
+        }
+        Stmt v = TryVectorizeStoreSeq(
+            inner_for->body, total_elements, parallel_vars, false,
+            inner_for->loop_var.get(), op->loop_var.get());
+        vector_dim_extent_ = 0;
+        outer_dim_extent_ = 0;
+        if (v.defined())
+          return v;
+      }
+
+      // 2D parallel nest that could not be vectorized (e.g. a compact->aligned
+      // UB copy): lower both levels to serial instead of leaving kParallel
+      // loops for codegen.
+      auto outer = make_object<ForNode>(*op);
+      outer->kind = ForKind::kSerial;
+      auto inner = make_object<ForNode>(*inner_for);
+      inner->kind = ForKind::kSerial;
+      inner->body = VisitStmt(inner_for->body);
+      outer->body = Stmt(inner);
+      return Stmt(outer);
+    }
+
+    // Serial cases
+    if (op->kind == ForKind::kSerial) {
+      const auto *inner_for = op->body.as<ForNode>();
+      if (!inner_for || inner_for->kind != ForKind::kParallel) {
+        return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+      }
+      PrimExpr total_elements = inner_for->extent * op->extent;
+      std::unordered_set<const VarNode *> parallel_vars = {
+          inner_for->loop_var.get()};
+
+      // serial -> parallel -> (store | seq)
+      if (inner_for->body.as<BufferStoreNode>() ||
+          inner_for->body.as<SeqStmtNode>()) {
+        int64_t inner_extent = 0;
+        if (TryGetElementCount(inner_for->extent, &inner_extent)) {
+          vector_dim_extent_ = inner_extent;
+          outer_dim_extent_ = 1; // No outer parallel loop in this case
+        }
+        Stmt v =
+            TryVectorizeStoreSeq(inner_for->body, total_elements, parallel_vars,
+                                 true, inner_for->loop_var.as<VarNode>());
+        vector_dim_extent_ = 0;
+        outer_dim_extent_ = 0;
+        if (!v.defined())
+          return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+        auto op_copy = make_object<ForNode>(*op);
+        op_copy->body = v;
+        return Stmt(op_copy);
+      }
+    }
+
+    return arith::IRMutatorWithAnalyzer::VisitStmt_(op);
+  }
+
+  Stmt VisitStmt_(const BlockNode *op) override {
+    // Save outer state
+    auto saved_buffers = std::move(temp_buffers_);
+    int saved_temp_id = temp_buffer_id_;
+    const VarNode *saved_vector_dim = vector_dim_var_;
+    const VarNode *saved_outer_dim = outer_dim_var_;
+    bool saved_is_2d_vectorizing = is_2d_vectorizing_;
+
+    // Reset block-local state
+    temp_buffers_.clear();
+    temp_buffer_id_ = 0;
+    vector_dim_var_ = nullptr;
+    outer_dim_var_ = nullptr;
+    is_2d_vectorizing_ = false;
+
+    // Visit body (vectorization happens here)
+    Stmt new_body = VisitStmt(op->body);
+
+    // Attach temps to THIS block only
+    Array<Buffer> allocs = op->alloc_buffers;
+    for (const Buffer &buf : temp_buffers_) {
+      allocs.push_back(buf);
+    }
+
+    // Restore outer state
+    temp_buffers_ = std::move(saved_buffers);
+    temp_buffer_id_ = saved_temp_id;
+    vector_dim_var_ = saved_vector_dim;
+    outer_dim_var_ = saved_outer_dim;
+    is_2d_vectorizing_ = saved_is_2d_vectorizing;
+
+    if (allocs.same_as(op->alloc_buffers) && new_body.same_as(op->body)) {
+      return GetRef<Stmt>(op);
+    }
+
+    return Block(op->iter_vars, op->reads, op->writes, op->name_hint, new_body,
+                 op->init, allocs);
+  }
+
+  // Generic Plan
+  struct VectorPlan {
+    int64_t inner_vec_len{0};
+    int64_t outer_extent{0};
+    const VarNode *outer_index_var{nullptr};
+    bool is_2d_vectorizable{false};
+  };
+
+  // Detect plan for vector, fill in the input plan
+  bool DetectVectorPlan(const BufferStoreNode *store, int64_t element_count,
+                        VectorPlan *plan) {
+    Buffer output_buffer = store->buffer;
+
+    // Helper to check if an expression contains a specific variable
+    auto ContainsVar = [](const PrimExpr &expr, const VarNode *var) -> bool {
+      class VarChecker : public ExprVisitor {
+      public:
+        const VarNode *target_var_;
+        bool found_{false};
+
+        explicit VarChecker(const VarNode *target_var)
+            : target_var_(target_var) {}
+
+        void VisitExpr_(const VarNode *op) override {
+          if (op == target_var_) {
+            found_ = true;
+          }
+          ExprVisitor::VisitExpr_(op);
+        }
+      };
+
+      VarChecker checker(var);
+      checker(expr);
+      return checker.found_;
+    };
+
+    /*----- 1D case -----*/
+    if (output_buffer->shape.size() == 1 && store->indices.size() == 1) {
+      if (!ContainsVar(store->indices[0], vector_dim_var_))
+        return false;
+      if (element_count <= 0)
+        return false;
+
+      plan->inner_vec_len = element_count;
+      plan->outer_extent = 1;
+      plan->outer_index_var = nullptr;
+      plan->is_2d_vectorizable = false;
+      return true;
+    }
+
+    /*----- 2D case -----*/
+    if (vector_dim_var_ == nullptr)
+      return false;
+
+    if (output_buffer->shape.size() == 2 && store->indices.size() == 2) {
+      // Check if inner index contains the vector dimension variable
+      bool is_l1_output = IsL1Buffer(output_buffer);
+      if (!ContainsVar(store->indices[1], vector_dim_var_) && !is_l1_output)
+        return false;
+

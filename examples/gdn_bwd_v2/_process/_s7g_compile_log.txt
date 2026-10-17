@@ -1,0 +1,21 @@
+S7B-COMPILE-L0-float16-cumsum OK src=2421
+S7B-COMPILE-L0-float16-solve_a OK src=10255
+S7B-COMPILE-L0-float16-scan1 OK src=21426
+S7B-COMPILE-L0-float16-scan2a OK src=52973
+S7B-COMPILE-L0-float16-scan2b OK src=49691
+S7B-COMPILE-L0-float32-cumsum OK src=2421
+S7B-COMPILE-L0-float32-solve_a OK src=10339
+S7B-COMPILE-L0-float32-scan1 OK src=21566
+S7B-COMPILE-L0-float32-scan2a OK src=53287
+S7B-COMPILE-L0-float32-scan2b OK src=50088
+S7B-COMPILE-TSC-float16-cumsum OK src=2422
+S7B-COMPILE-TSC-float16-solve_a OK src=10792
+S7B-COMPILE-TSC-float16-scan1 OK src=22973
+S7B-COMPILE-TSC-float16-scan2a OK src=61089
+S7B-COMPILE-TSC-float16-scan2b OK src=53634
+S7B-COMPILE-TSC-float32-cumsum OK src=2422
+S7B-COMPILE-TSC-float32-solve_a OK src=10876
+S7B-COMPILE-TSC-float32-scan1 OK src=23118
+S7B-COMPILE-TSC-float32-scan2a OK src=61199
+S7B-COMPILE-TSC-float32-scan2b OK src=54152
+S7B-ALL-OK

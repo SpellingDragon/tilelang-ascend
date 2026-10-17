@@ -1,0 +1,108 @@
+=== scan2a L0-fp16
+S7D-MPMODEL-scan2a-L0-fp16 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2a-L0-fp16 scope-distribution {'shared.l1': 15, 'wmma.accumulator': 9, 'shared.ub': 34} n_alloc=58
+S7D-MPMODEL-scan2a-L0-fp16 walk-stats n_alloc_tracked=58 n_linear=219 n_first_use=58 n_touch_names=58
+S7D-MPMODEL-scan2a-L0-fp16 modelA-faithful OK usage=195936/196352
+S7D-MPMODEL-scan2a-L0-fp16 modelB-stmt-level OK usage=195936/196352
+S7D-MPMODEL-scan2a-L0-fp16 ---- UB interval table (modelA) ----
+  be_ub: [61, 214], size=256, stmt-reach=[61, 126] KILL-DISPLACED old=126 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 126
+  zero_ub: [62, 214], size=256, stmt-reach=[62, 198] KILL-DISPLACED old=198 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 198
+  e_ub: [65, 214], size=256, stmt-reach=[65, 162] KILL-DISPLACED old=162 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 162
+  glast_ub: [68, 214], size=32, stmt-reach=[68, 174] KILL-DISPLACED old=174 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 174
+  th_ub: [69, 214], size=256, stmt-reach=[69, 78] KILL-DISPLACED old=78 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 78
+  bee_ub: [74, 214], size=256, stmt-reach=[74, 85] KILL-DISPLACED old=85 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 85
+  dhp_ub: [135, 214], size=16384, stmt-reach=[135, 174] KILL-DISPLACED old=174 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 174
+  rs_ub: [157, 214], size=4096, stmt-reach=[157, 159] KILL-DISPLACED old=159 new=214 genL=1 killL=2 claimed-kill 214 > stmt-reach 159
+S7D-MPMODEL-scan2a-L0-fp16 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2a-L0-fp16 DONE
+=== scan2a TSC-fp16
+S7D-MPMODEL-scan2a-TSC-fp16 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2a-TSC-fp16 scope-distribution {'shared.l1': 15, 'wmma.accumulator': 13, 'shared.ub': 34} n_alloc=62
+S7D-MPMODEL-scan2a-TSC-fp16 walk-stats n_alloc_tracked=62 n_linear=275 n_first_use=55 n_touch_names=55
+S7D-MPMODEL-scan2a-TSC-fp16 modelA-faithful OK usage=195936/196352
+S7D-MPMODEL-scan2a-TSC-fp16 modelB-stmt-level OK usage=195936/196352
+S7D-MPMODEL-scan2a-TSC-fp16 ---- UB interval table (modelA) ----
+  be_ub: [94, 269], size=256, stmt-reach=[94, 164] KILL-DISPLACED old=164 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 164
+  zero_ub: [95, 269], size=256, stmt-reach=[95, 245] KILL-DISPLACED old=245 new=269 genL=1 killL=2 claimed-kill 269 > stmt-reach 245
+  e_ub: [98, 269], size=256, stmt-reach=[98, 202] KILL-DISPLACED old=202 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 202
+  glast_ub: [101, 269], size=32, stmt-reach=[101, 216] KILL-DISPLACED old=216 new=269 genL=1 killL=4 claimed-kill 269 > stmt-reach 216
+  th_ub: [102, 269], size=256, stmt-reach=[102, 112] KILL-DISPLACED old=112 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 112
+  bee_ub: [107, 269], size=256, stmt-reach=[107, 119] KILL-DISPLACED old=119 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 119
+  io_hv: [109, 270], size=8192, stmt-reach=[109, 269] claimed-kill 270 > stmt-reach 269
+  xk_ub: [110, 270], size=16384, stmt-reach=[110, 268] claimed-kill 270 > stmt-reach 268
+  x_ub: [171, 222], size=16384, stmt-reach=[171, 219] claimed-kill 222 > stmt-reach 219
+  dhp_ub: [174, 243], size=16384, stmt-reach=[174, 216] KILL-DISPLACED old=216 new=243 genL=3 killL=4 claimed-kill 243 > stmt-reach 216
+  rs_ub: [197, 219], size=4096, stmt-reach=[197, 199] KILL-DISPLACED old=199 new=219 genL=2 killL=3 claimed-kill 219 > stmt-reach 199
+S7D-MPMODEL-scan2a-TSC-fp16 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2a-TSC-fp16 DONE
+=== scan2a TSC-fp32
+S7D-MPMODEL-scan2a-TSC-fp32 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2a-TSC-fp32 scope-distribution {'shared.l1': 15, 'wmma.accumulator': 13, 'shared.ub': 34} n_alloc=62
+S7D-MPMODEL-scan2a-TSC-fp32 walk-stats n_alloc_tracked=62 n_linear=275 n_first_use=55 n_touch_names=55
+S7D-MPMODEL-scan2a-TSC-fp32 modelA-faithful OK usage=191840/196352
+S7D-MPMODEL-scan2a-TSC-fp32 modelB-stmt-level OK usage=191840/196352
+S7D-MPMODEL-scan2a-TSC-fp32 ---- UB interval table (modelA) ----
+  be_ub: [94, 269], size=256, stmt-reach=[94, 164] KILL-DISPLACED old=164 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 164
+  zero_ub: [95, 269], size=256, stmt-reach=[95, 245] KILL-DISPLACED old=245 new=269 genL=1 killL=2 claimed-kill 269 > stmt-reach 245
+  e_ub: [98, 269], size=256, stmt-reach=[98, 202] KILL-DISPLACED old=202 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 202
+  glast_ub: [101, 269], size=32, stmt-reach=[101, 216] KILL-DISPLACED old=216 new=269 genL=1 killL=4 claimed-kill 269 > stmt-reach 216
+  th_ub: [102, 269], size=256, stmt-reach=[102, 112] KILL-DISPLACED old=112 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 112
+  bee_ub: [107, 269], size=256, stmt-reach=[107, 119] KILL-DISPLACED old=119 new=269 genL=1 killL=3 claimed-kill 269 > stmt-reach 119
+  io_hv: [109, 270], size=16384, stmt-reach=[109, 269] claimed-kill 270 > stmt-reach 269
+  xk_ub: [110, 270], size=16384, stmt-reach=[110, 268] claimed-kill 270 > stmt-reach 268
+  x_ub: [171, 222], size=16384, stmt-reach=[171, 219] claimed-kill 222 > stmt-reach 219
+  dhp_ub: [174, 243], size=16384, stmt-reach=[174, 216] KILL-DISPLACED old=216 new=243 genL=3 killL=4 claimed-kill 243 > stmt-reach 216
+  rs_ub: [197, 219], size=4096, stmt-reach=[197, 199] KILL-DISPLACED old=199 new=219 genL=2 killL=3 claimed-kill 219 > stmt-reach 199
+S7D-MPMODEL-scan2a-TSC-fp32 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2a-TSC-fp32 DONE
+=== scan2b L0-fp16
+S7D-MPMODEL-scan2b-L0-fp16 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2b-L0-fp16 scope-distribution {'shared.l1': 12, 'wmma.accumulator': 10, 'shared.ub': 30} n_alloc=52
+S7D-MPMODEL-scan2b-L0-fp16 walk-stats n_alloc_tracked=52 n_linear=255 n_first_use=52 n_touch_names=52
+S7D-MPMODEL-scan2b-L0-fp16 modelA-faithful OK usage=180064/196352
+S7D-MPMODEL-scan2b-L0-fp16 modelB-stmt-level OK usage=180064/196352
+S7D-MPMODEL-scan2b-L0-fp16 ---- UB interval table (modelA) ----
+  g_ub: [53, 250], size=256, stmt-reach=[53, 193] KILL-DISPLACED old=193 new=250 genL=1 killL=3 claimed-kill 250 > stmt-reach 193
+  be_ub: [54, 250], size=256, stmt-reach=[54, 167] KILL-DISPLACED old=167 new=250 genL=1 killL=3 claimed-kill 250 > stmt-reach 167
+  zero_ub: [55, 250], size=256, stmt-reach=[55, 198] KILL-DISPLACED old=198 new=250 genL=1 killL=3 claimed-kill 250 > stmt-reach 198
+  bee_ub: [67, 250], size=256, stmt-reach=[67, 123] KILL-DISPLACED old=123 new=250 genL=1 killL=3 claimed-kill 250 > stmt-reach 123
+  dgam_ub: [70, 250], size=256, stmt-reach=[70, 245] KILL-DISPLACED old=245 new=250 genL=1 killL=2 claimed-kill 250 > stmt-reach 245
+  rs_ub: [89, 250], size=4096, stmt-reach=[89, 225] KILL-DISPLACED old=225 new=250 genL=1 killL=2 claimed-kill 250 > stmt-reach 225
+S7D-MPMODEL-scan2b-L0-fp16 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2b-L0-fp16 DONE
+=== scan2b TSC-fp16
+S7D-MPMODEL-scan2b-TSC-fp16 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2b-TSC-fp16 scope-distribution {'shared.l1': 12, 'wmma.accumulator': 12, 'shared.ub': 31} n_alloc=55
+S7D-MPMODEL-scan2b-TSC-fp16 walk-stats n_alloc_tracked=55 n_linear=278 n_first_use=49 n_touch_names=49
+S7D-MPMODEL-scan2b-TSC-fp16 modelA-faithful OK usage=163680/196352
+S7D-MPMODEL-scan2b-TSC-fp16 modelB-stmt-level OK usage=163680/196352
+S7D-MPMODEL-scan2b-TSC-fp16 ---- UB interval table (modelA) ----
+  g_ub: [65, 273], size=256, stmt-reach=[65, 211] KILL-DISPLACED old=211 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 211
+  be_ub: [66, 273], size=256, stmt-reach=[66, 181] KILL-DISPLACED old=181 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 181
+  zero_ub: [67, 273], size=256, stmt-reach=[67, 216] KILL-DISPLACED old=216 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 216
+  bee_ub: [79, 273], size=256, stmt-reach=[79, 120] KILL-DISPLACED old=120 new=273 genL=1 killL=4 claimed-kill 273 > stmt-reach 120
+  dgam_ub: [82, 273], size=256, stmt-reach=[82, 265] KILL-DISPLACED old=265 new=273 genL=1 killL=2 claimed-kill 273 > stmt-reach 265
+  io_bq2: [87, 271], size=8192, stmt-reach=[87, 270] claimed-kill 271 > stmt-reach 270
+  rs_ub: [102, 252], size=4096, stmt-reach=[102, 242] claimed-kill 252 > stmt-reach 242
+  k2_ub: [115, 252], size=16384, stmt-reach=[115, 240] claimed-kill 252 > stmt-reach 240
+  xk_ub: [130, 252], size=16384, stmt-reach=[130, 247] KILL-DISPLACED old=247 new=247 genL=2 killL=4 claimed-kill 252 > stmt-reach 247
+S7D-MPMODEL-scan2b-TSC-fp16 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2b-TSC-fp16 DONE
+=== scan2b TSC-fp32
+S7D-MPMODEL-scan2b-TSC-fp32 captured-ir ok body=AttrStmt
+S7D-MPMODEL-scan2b-TSC-fp32 scope-distribution {'shared.l1': 12, 'wmma.accumulator': 12, 'shared.ub': 31} n_alloc=55
+S7D-MPMODEL-scan2b-TSC-fp32 walk-stats n_alloc_tracked=55 n_linear=278 n_first_use=49 n_touch_names=49
+S7D-MPMODEL-scan2b-TSC-fp32 modelA-faithful OK usage=171872/196352
+S7D-MPMODEL-scan2b-TSC-fp32 modelB-stmt-level OK usage=171872/196352
+S7D-MPMODEL-scan2b-TSC-fp32 ---- UB interval table (modelA) ----
+  g_ub: [65, 273], size=256, stmt-reach=[65, 211] KILL-DISPLACED old=211 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 211
+  be_ub: [66, 273], size=256, stmt-reach=[66, 181] KILL-DISPLACED old=181 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 181
+  zero_ub: [67, 273], size=256, stmt-reach=[67, 216] KILL-DISPLACED old=216 new=273 genL=1 killL=3 claimed-kill 273 > stmt-reach 216
+  bee_ub: [79, 273], size=256, stmt-reach=[79, 120] KILL-DISPLACED old=120 new=273 genL=1 killL=4 claimed-kill 273 > stmt-reach 120
+  dgam_ub: [82, 273], size=256, stmt-reach=[82, 265] KILL-DISPLACED old=265 new=273 genL=1 killL=2 claimed-kill 273 > stmt-reach 265
+  io_bq2: [87, 271], size=16384, stmt-reach=[87, 270] claimed-kill 271 > stmt-reach 270
+  rs_ub: [102, 252], size=4096, stmt-reach=[102, 242] claimed-kill 252 > stmt-reach 242
+  k2_ub: [115, 252], size=16384, stmt-reach=[115, 240] claimed-kill 252 > stmt-reach 240
+  xk_ub: [130, 252], size=16384, stmt-reach=[130, 247] KILL-DISPLACED old=247 new=247 genL=2 killL=4 claimed-kill 252 > stmt-reach 247
+S7D-MPMODEL-scan2b-TSC-fp32 ---- IR excerpt: displaced buffers' touches ----
+S7D-MPMODEL-scan2b-TSC-fp32 DONE
