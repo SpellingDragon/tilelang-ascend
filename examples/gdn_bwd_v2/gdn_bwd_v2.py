@@ -76,8 +76,18 @@ the S7 handoff). NT = ceil(L/C) and n_tail are therefore compile-time constants,
 which makes all tail-chunk scalar placements compile-time-constant offsets.
 """
 
+import os
+
 import tilelang
 from tilelang import language as T
+
+# Debug switch (compile-time constant; default off => production bytecode
+# unchanged). With GDN_S2A_DBG=1, scan2a emits dqkt (da_ub) through the
+# WS_DKT box instead of dKt, so one on-card run tells "dqkt construction
+# wrong" (dqkt != golden) from "GEMM/L1 path wrong" (dqkt == golden but
+# DQ != golden dqkt@K). Only meaningful for single-chunk runs, where the
+# DKT box is zero anyway; never set for acceptance runs.
+_S2A_DBG = os.environ.get("GDN_S2A_DBG", "0") == "1"
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
 pass_configs = {
@@ -886,7 +896,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     else:
                         T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                    T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
+                    if _S2A_DBG:
+                        # debug only: expose dqkt instead of dKt (see _S2A_DBG)
+                        T.copy(da_ub, WS_DKT[b, h, cc * C, hh * BK])
+                    else:
+                        T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
                 T.copy(dE_ub, WS_DE[b, h, cc * C])
                 T.copy(dgam_ub, WS_DGAM[b, h, cc * C])
