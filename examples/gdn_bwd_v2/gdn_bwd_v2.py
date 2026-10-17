@@ -636,17 +636,28 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 #      P = (raw .* Gam) .* M -> p_l1 (S7e :640-646 order) ----
                 for hh in T.serial(bk_num):
                     T.copy(Q[b, h, cc * C, hh * BK], q_l1)  # GM->L1 direct (S7e :630 idiom)
-                    T.copy(K[b, h, cc * C, hh * BK], io_xk)
-                    T.copy(io_xk, xk_ub)
-                    T.copy(xk_ub, io_xk)
-                    T.copy(io_xk, k_l1)
+                    # K goes GM->L1 directly (scan2b :1043 idiom). Routing it
+                    # through io_xk/xk_ub spilled io_xk to a GM workspace
+                    # (workspace_1) under C-segment liveness, and the spill
+                    # readback copy was emitted as
+                    #   copy_gm_to_l1(k_l1, workspace_1, 64, 0, 0, true)
+                    # (stride=0, rows=0 -- the only zero-arg copy in the
+                    # 833-line codegen) -> on-card 507015 unaligned.
+                    T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     T.gemm_v0(q_l1, k_l1, dp_l0, transpose_B=True, init=(hh == 0))
                 T.copy(dp_l0, workspace_lcc[cid, :, :])  # stash raw QK^T
                 # Gamma (aux lane, 3-loop exp idiom) -> P assembly
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = g_ub[i] - g_ub[j]
+                # Negation must be a plain unary neg. The former form
+                # `zero_ub[i] - aux_ub[i, j]` (1D row-broadcast inside a 2D
+                # Parallel) lowered to a per-row Sub whose src0 is
+                # zero_ub + 4*i -- a 4B-stepped, non-32B-aligned VEC address
+                # in 63 of 64 rows -> on-card 507015 "UB address ... not
+                # aligned" (fixp 0xd8). scan2b dodged this only because its
+                # twins sit in T.serial loops (S7g "no broadcast temp").
                 for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = zero_ub[i] - aux_ub[i, j]
+                    aux_ub[i, j] = -aux_ub[i, j]
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 T.copy(workspace_lcc[cid, :, :], da_ub)  # raw
@@ -840,7 +851,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = g_ub[i] - g_ub[j]
                 for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = zero_ub[i] - aux_ub[i, j]
+                    aux_ub[i, j] = -aux_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1179,7 +1190,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         aux_ub[i, j] = g_ub[i] - g_ub[j]
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
-                        aux_ub[i, j] = zero_ub[i] - aux_ub[i, j]
+                        aux_ub[i, j] = -aux_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1209,7 +1220,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         dx_ub[i, j] = g_ub[i] - g_ub[j]
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
-                        dx_ub[i, j] = zero_ub[i] - dx_ub[i, j]
+                        dx_ub[i, j] = -dx_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     dx_ub[i, j] = T.exp(dx_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1245,7 +1256,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         dx_ub[i, j] = g_ub[i] - g_ub[j]
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
-                        dx_ub[i, j] = zero_ub[i] - dx_ub[i, j]
+                        dx_ub[i, j] = -dx_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     dx_ub[i, j] = T.exp(dx_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
