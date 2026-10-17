@@ -649,15 +649,15 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # Gamma (aux lane, 3-loop exp idiom) -> P assembly
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = g_ub[i] - g_ub[j]
-                # Negation must be a plain unary neg. The former form
-                # `zero_ub[i] - aux_ub[i, j]` (1D row-broadcast inside a 2D
-                # Parallel) lowered to a per-row Sub whose src0 is
-                # zero_ub + 4*i -- a 4B-stepped, non-32B-aligned VEC address
-                # in 63 of 64 rows -> on-card 507015 "UB address ... not
-                # aligned" (fixp 0xd8). scan2b dodged this only because its
-                # twins sit in T.serial loops (S7g "no broadcast temp").
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = -aux_ub[i, j]
+                # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
+                # (test_gdn_bwd_v2.py:237). The neg that used to sit here
+                # flipped it to exp(gam_c - gam_r): the lower triangle then
+                # reached ~1e13, P overflowed fp16 to inf and the mask mul
+                # turned it into nan (w11 diag: s2a out0/3/4/8 nan). The old
+                # `zero_ub[i] - aux_ub[i, j]` spelling (which carried that
+                # neg) also lowered to a 4B-stepped, non-32B-aligned VEC
+                # address in a 2D Parallel -> on-card 507015 (fixp 0xd8);
+                # both problems disappear with the direct exp below.
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 T.copy(workspace_lcc[cid, :, :], da_ub)  # raw
@@ -847,11 +847,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # S7f-D/E: dGam accumulation record -> GM boundary (H3; the
                 # B11 merge in scan2b continues this record)
                 T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
-                # dA = (dP .* Gam) .* M (aux recomputes Gamma, 3-loop idiom)
+                # dA = (dP .* Gam) .* M (aux recomputes Gamma, 3-loop idiom;
+                # same sign fix as the P assembly above)
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = g_ub[i] - g_ub[j]
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = -aux_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1185,12 +1184,10 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     dx_ub[i, j] = dx_ub[i, j] * aux_ub[i, j]  # dL
                 # dbeta += rowsum(dL .* Gam .* KK^T) -- Gamma recomputed into
                 # the aux lane (3-loop exp idiom), then aux = dL .* Gam
+                # (no neg -- see scan2a Gamma note)
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
                         aux_ub[i, j] = g_ub[i] - g_ub[j]
-                for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                    for j in T.serial(C):
-                        aux_ub[i, j] = -aux_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1214,13 +1211,10 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # S7f-D/E: dGam record update (B3 part + B11 merge)
                 T.copy(dgam2_ub, WS_DGAM2[b, h, cc * C, 0])
                 # dX = mul2 .* Gam (Gamma recomputed into the dx lane; dL is
-                # dead after the two products above)
+                # dead after the two products above; no neg -- see scan2a note)
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
                         dx_ub[i, j] = g_ub[i] - g_ub[j]
-                for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                    for j in T.serial(C):
-                        dx_ub[i, j] = -dx_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
                     dx_ub[i, j] = T.exp(dx_ub[i, j])
                 for (i, j) in T.Parallel(C, C):
@@ -1254,11 +1248,8 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 for i in T.serial(C):  # S7g: serial (no broadcast temp)
                     for j in T.serial(C):
                         dx_ub[i, j] = g_ub[i] - g_ub[j]
-                for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                    for j in T.serial(C):
-                        dx_ub[i, j] = -dx_ub[i, j]  # plain neg, see scan2a Gamma note
                 for (i, j) in T.Parallel(C, C):
-                    dx_ub[i, j] = T.exp(dx_ub[i, j])
+                    dx_ub[i, j] = T.exp(dx_ub[i, j])  # B12 Gam, no neg (scan2a note)
                 for (i, j) in T.Parallel(C, C):
                     dgam2_ub[i, j] = dgam2_ub[i, j] * dx_ub[i, j]
                 T.copy(dgam2_ub, io_cc)
