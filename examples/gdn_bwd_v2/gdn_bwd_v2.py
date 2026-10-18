@@ -790,8 +790,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(WS_H[b, h, cc, bv * BV, hh * BK], hin_l1)  # H_in reload (GM->L1 direct)
                         T.copy(Q[b, h, cc * C, hh * BK], q_l1)
                         # B5b: dQ_hh += (E .* dO) H_in_hh
+                        # D12: a constant init=True keeps this L0C a single-shot
+                        # GEMM; an accumulate target (init=False / data-dependent
+                        # init) makes codegen emit a 1-column copy_l0c_to_gm.
                         if hh == 0:
-                            T.gemm_v0(t1_l1, hin_l1, dq0_l0, init=(bv == 0))
+                            T.gemm_v0(t1_l1, hin_l1, dq0_l0, init=True)
                         else:
                             T.gemm_v0(t1_l1, hin_l1, dq1_l0, init=(bv == 0))
                         # B5c: dH_hh += (E .* dO)^T Q_hh
@@ -812,7 +815,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                             T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
                     # ---- B15: dH half -> WS_D relay (dh0 for the first chunk);
                     #      B9 vec part: dH += exp(gam_{n-1}) Delta' ----
-                    for hh in T.serial(bk_num):
+                    # D13: python range (compile-time unroll) instead of T.serial.
+                    # copy_l0c_to_gm's realTailN is inferred as 1 when the GM slice
+                    # contains a loop variable (hh * BK); unrolling makes the slice
+                    # constant so the copy covers all BK columns (dh0's output was
+                    # 1 column wide on card).
+                    for hh in range(bk_num):
                         T.tile.fill(dhp_ub, 0.0)
                         T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
                         T.tile.fill(x_ub, 0.0)
@@ -832,7 +840,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # ---- dW -> WS_DW boundary (sign fold, S7e :789-793; the dw
                 #      half boxes become the B4 dK-part accumulators after this
                 #      write-back) ----
-                for hh in T.serial(bk_num):
+                for hh in range(bk_num):
+                    # D13: range-unrolled so realTailN stays 64 (see B15 note)
                     if hh == 0:
                         T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -874,16 +883,28 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(da_ub, io_cc)
                 T.copy(io_cc, workspace_vcc[cid, :, :])
                 T.copy(workspace_vcc[cid, :, :], da_l1)
+                if _S2A_DBG:
+                    # debug: recompute dqkt@K from the SAME da_l1 into the (single-
+                    # chunk-zero) dKt L0C and dump it. Touches no CV workspace, so
+                    # the cube/vec sync pairing is unchanged. WS_DKT = fresh GEMM
+                    # of the kernel's own A operand; WS_DGAM2 = UB dqkt.
+                    for hh in T.serial(bk_num):
+                        T.copy(K[b, h, cc * C, hh * BK], k_l1)
+                        T.gemm_v0(da_l1, k_l1, dkt0_l0, init=True)
+                        T.copy(dkt0_l0, WS_DKT[b, h, cc * C, hh * BK])
                 for hh in T.serial(bk_num):
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     T.copy(Q[b, h, cc * C, hh * BK], q_l1)
                     if hh == 0:
-                        T.gemm_v0(da_l1, k_l1, dq0_l0, init=False)
+                        # D12: dqkt@K goes to its own single-shot L0C (dp_l0 is
+                        # dead after the dP dump at :850); an init=False target
+                        # here made codegen copy only 1 column into DQ.
+                        T.gemm_v0(da_l1, k_l1, dp_l0, init=True)
                         T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
                         T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                     else:
-                        T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
+                        T.gemm_v0(da_l1, k_l1, dp_l0, init=False)
                         T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
                         T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -897,20 +918,23 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                     if _S2A_DBG:
-                        # debug only: expose dqkt instead of dKt (see _S2A_DBG)
-                        T.copy(da_ub, WS_DKT[b, h, cc * C, hh * BK])
+                        # debug only: da_ub (dqkt) into the DGAM2 box (this run
+                        # does not consume DGAM2; the DKT box now carries da_l1)
+                        T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
                     else:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
                 T.copy(dE_ub, WS_DE[b, h, cc * C])
                 T.copy(dgam_ub, WS_DGAM[b, h, cc * C])
-                for hh in T.serial(bk_num):
-                    if hh == 0:
-                        T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                    else:
-                        T.copy(dq1_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                for hh in range(bk_num):
+                    # D13: range-unrolled (realTailN=64) + D12 single-shot halves
+                    # added in UB; workspace_ldk stays strictly 1W1R.
+                    T.copy(dp_l0, workspace_ldk[cid, :, hh * BK])
+                    T.copy(workspace_ldk[cid, :, hh * BK], t1_ub)   # dqkt @ K
+                    T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
+                    T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)   # (E.*dO) @ H_in
+                    for (i, j) in T.Parallel(C, BK):
+                        xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
                     T.copy(xk_ub, io_xk)
                     T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
 
@@ -1240,7 +1264,9 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(dx_ub, io_cc)
                 T.copy(io_cc, workspace_vcc[cid, :, :])
                 T.copy(workspace_vcc[cid, :, :], p_l1)
-                for hh in T.serial(bk_num):
+                # D13: range-unrolled so the dkk L0C->GM copy keeps realTailN=64
+                # (a T.serial loop variable in the slice made it 1 => dk wrong)
+                for hh in range(bk_num):
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     if hh == 0:
                         T.gemm_v0(p_l1, k_l1, dkk0_l0, init=True)
