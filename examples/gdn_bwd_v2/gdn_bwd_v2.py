@@ -782,8 +782,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(dvnew_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1_ub)
                     if _S2A_DW_DBG:
-                        # debug: fp32 dVnew = P^T dO + Kt^T Delta' before the
-                        # fp16 write-back (DKT box; dqkt dump yields).
+                        # debug: fp32 dVnew before the fp16 write-back. The dKt
+                        # zero-write yields to this dump (same box).
                         T.copy(t1_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(t1_ub, io_bq)
                     T.copy(io_bq, WS_DV[b, h, cc * C, bv * BV])
@@ -828,6 +828,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # ---- B5b/B5c/B6 half-loop ----
                     T.copy(dvnew_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1_ub)
+                    if _S2A_DW_DBG:
+                        # debug: fp32 dVnew before the fp16 write-back. The dKt
+                        # zero-write yields to this dump (same box).
+                        T.copy(t1_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(t1_ub, io_bq)
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bq_l1)  # dVnew L1 (B6)
@@ -967,7 +971,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # missing elsewhere -> emit zeros (matches the single-chunk
                     # golden; multi-chunk dKt stays a known gap).
                     T.tile.fill(xk_ub, 0.0)
-                    if not _S2A_DBG:
+                    if not _S2A_DBG and not _S2A_DW_DBG:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
                 if not _S2A_DBG:
