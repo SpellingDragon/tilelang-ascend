@@ -751,7 +751,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(WS_H[b, h, cc, bv * BV, hh * BK], io_hv)
                         T.copy(io_hv, x_ub)  # H_in half
                         T.tile.fill(dhp_ub, 0.0)
-                        T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half (fp32 GM)
+                        if cc != chunk_num - 1:
+                            # Delta' is zero for the deepest chunk; WS_D is not
+                            # initialised by the runtime (auto workspace), so
+                            # reading it there would inject GM garbage into
+                            # dVnew / dgam / dW.
+                            T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half (fp32 GM)
                         for (i, j) in T.Parallel(BV, BK):
                             x_ub[i, j] = x_ub[i, j] * dhp_ub[i, j]
                         T.reduce_sum(x_ub, redh_ub, dim=1)
@@ -855,7 +860,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # 1 column wide on card).
                     for hh in range(bk_num):
                         T.tile.fill(dhp_ub, 0.0)
-                        T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
+                        if cc != chunk_num - 1:
+                            T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
                         T.tile.fill(x_ub, 0.0)
                         if hh == 0:
                             T.copy(dh0_l0, workspace_lbd[cid, hh, :, :])
@@ -948,12 +954,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(xk_ub, WS_DK[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dW boundary (sign fold, S7e :789-790) + dKt boundary ----
                 for hh in T.serial(bk_num):
-                    if hh == 0:
-                        T.copy(dkt0_l0, workspace_ldk[cid, hh, :, :])
-                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
-                    else:
-                        T.copy(dkt1_l0, workspace_ldk[cid, hh, :, :])
-                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
+                    # dKt = vnew @ Delta'^T is not implemented (no GEMM feeds
+                    # dkt0/1_l0), so the L0C lane holds uninitialised garbage.
+                    # Delta' is zero on the deepest chunk and the term is still
+                    # missing elsewhere -> emit zeros (matches the single-chunk
+                    # golden; multi-chunk dKt stays a known gap).
+                    T.tile.fill(xk_ub, 0.0)
                     if not _S2A_DBG:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
