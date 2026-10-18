@@ -109,10 +109,14 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
         print(line)
     if os.environ.get("GDN_S2A_DW_DBG") == "1":
         got4 = outs[4].float().cpu().numpy().reshape(64, 64)
-        dv_g = gold["out2_WS_DV"]
-        r4, bad4 = rel(got4, dv_g)
-        print(f"DUMP-dVnew rel={r4:.3e} nonfinite={bad4} "
-              f"gold_max={float(np.abs(dv_g).max()):.3e}")
+        amax = float(np.abs(got4).max())
+        print(f"DUMP-P absmax={amax:.3e} "
+              f"nan={int(np.isnan(got4).sum())} inf={int(np.isinf(got4).sum())} "
+              f"upper_absmax={float(np.abs(np.triu(got4, 1)).max()):.3e}")
+        # invariant self-check: a correct P has a non-zero lower triangle, so an
+        # all-zero dump means the probe itself is broken (e.g. another writer
+        # clobbered the box), not that the kernel produced zeros.
+        print("PROBE-%s" % ("BROKEN-all-zero" if amax == 0.0 else "OK"))
     print("S2ABOX-DONE")
 
 

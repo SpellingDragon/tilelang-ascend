@@ -716,6 +716,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # P
                 T.copy(da_ub, io_cc)
+                if _S2A_DW_DBG:
+                    # debug: the fp16 P (cast back to fp32). inf here means the
+                    # upper triangle was not zeroed before the cast.
+                    T.copy(io_cc, aux_ub)
+                    T.copy(aux_ub, WS_DKT[b, h, cc * C, 0])
                 T.copy(io_cc, workspace_vcc[cid, :, :])
                 T.copy(workspace_vcc[cid, :, :], p_l1)
                 # ---- 1D accumulators ----
@@ -781,10 +786,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # dVnew -> WS_DV boundary (main dtype)
                     T.copy(dvnew_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1_ub)
-                    if _S2A_DW_DBG:
-                        # debug: fp32 dVnew before the fp16 write-back. The dKt
-                        # zero-write yields to this dump (same box).
-                        T.copy(t1_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(t1_ub, io_bq)
                     T.copy(io_bq, WS_DV[b, h, cc * C, bv * BV])
                     # ---- W H^T half sum -> Vnew = U0 + (-W) H^T (S7e :685-689);
@@ -828,10 +829,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # ---- B5b/B5c/B6 half-loop ----
                     T.copy(dvnew_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1_ub)
-                    if _S2A_DW_DBG:
-                        # debug: fp32 dVnew before the fp16 write-back. The dKt
-                        # zero-write yields to this dump (same box).
-                        T.copy(t1_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(t1_ub, io_bq)
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bq_l1)  # dVnew L1 (B6)
