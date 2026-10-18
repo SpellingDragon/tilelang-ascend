@@ -88,6 +88,9 @@ from tilelang import language as T
 # DQ != golden dqkt@K). Only meaningful for single-chunk runs, where the
 # DKT box is zero anyway; never set for acceptance runs.
 _S2A_DBG = os.environ.get("GDN_S2A_DBG", "0") == "1"
+# dedicated switch: dump the fp32 dW lane into the DKT box (takes
+# priority over the dqkt dump, which writes the same box).
+_S2A_DW_DBG = os.environ.get("GDN_S2A_DW_DBG", "0") == "1"
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
 pass_configs = {
@@ -887,6 +890,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     else:
                         T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
                         T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
+                    if _S2A_DW_DBG:
+                        # debug: fp32 dW lane BEFORE the fp16 write-back (the
+                        # DKT box is skipped in debug mode). Splits
+                        # "dw0_l0 already has NaNs" from "the cast produces
+                        # them".
+                        T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # dW = -sum dVnew H_in
                     T.copy(xk_ub, io_xk)
@@ -917,7 +926,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead; baseline lane)
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # d(QKt)
-                if _S2A_DBG:
+                if _S2A_DBG and not _S2A_DW_DBG:
                     # debug: the UB dqkt (fp32) through the DKT box.
                     T.copy(da_ub, WS_DKT[b, h, cc * C, 0])
                 # ---- B4: dQ_hh += d(QKt) K_hh ; dK part_hh = d(QKt)^T Q_hh

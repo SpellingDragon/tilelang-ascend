@@ -10,6 +10,7 @@
 #     gconst  : g == -0.1 -> Gam = exp(-0.1*(r-c)); a sign flip shows as e^6.3
 #   Usage: python _w11_s2a_boxes.py <dtype> [normal|g0|gconst] [--golden-only]
 #   --golden-only runs the fp64 side only (no tilelang / NPU needed).
+import os
 import sys
 
 sys.path.insert(0, "/tmp")
@@ -106,6 +107,11 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
             r2, _ = rel(got, alt[name])
             line += f"  [alt(dvnew-form) rel={r2:.3e}]"
         print(line)
+    if os.environ.get("GDN_S2A_DW_DBG") == "1":
+        got4 = outs[4].float().cpu().numpy().reshape(64, 64)
+        r4, bad4 = rel(got4, dw_s2a)
+        print(f"DUMP-dWlane rel={r4:.3e} nonfinite={bad4} "
+              f"gold_max={float(np.abs(dw_s2a).max()):.3e}")
     print("S2ABOX-DONE")
 
 
