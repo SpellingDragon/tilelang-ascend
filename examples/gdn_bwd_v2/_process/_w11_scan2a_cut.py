@@ -56,7 +56,7 @@ _S2A_DBG = False  # cut probe: debug dumps off
 
 
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
-              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28],
+              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31],
               pass_configs=pass_configs)
 def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
@@ -96,6 +96,8 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
         WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
+        workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
+        workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -495,13 +497,15 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                             # it into UB immediately (one liveness window, no GM
                             # round-trip, no realTailN).
                             T.gemm_v0(da_l1, k_l1, dq1_l0, init=True)
-                            T.copy(dq1_l0, t1_ub)
+                            T.copy(dq1_l0, workspace_dq1[cid, :, :])
+                            T.copy(workspace_dq1[cid, :, :], t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
                             T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                         else:
                             T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
-                            T.copy(dq1_l0, t1_ub)
+                            T.copy(dq1_l0, workspace_dq1[cid, :, :])
+                            T.copy(workspace_dq1[cid, :, :], t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
                             T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -524,7 +528,8 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                         # D12/D13: B4's half already sits in t1_ub (taken straight
                         # from L0C right after its GEMM). Here only B5b's half is
                         # fetched and the two are added in UB before the write-back.
-                        T.copy(dq0_l0, xk_ub)
+                        T.copy(dq0_l0, workspace_dq0[cid, :, :])
+                        T.copy(workspace_dq0[cid, :, :], xk_ub)
                         for (i, j) in T.Parallel(C, BK):
                             xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
                         T.copy(xk_ub, io_xk)

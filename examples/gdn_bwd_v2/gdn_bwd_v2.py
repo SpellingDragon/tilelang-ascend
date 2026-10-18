@@ -496,7 +496,7 @@ def gdn_bwd_v2_scan1(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="f
 #    consumer now share one kernel).
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
-              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28],
+              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31],
               pass_configs=pass_configs)
 def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
@@ -536,8 +536,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
         WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
-        WS_DQ1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
-        WS_DQ0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
+        workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
+        workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -933,15 +933,15 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         # it into UB immediately (one liveness window, no GM
                         # round-trip, no realTailN).
                         T.gemm_v0(da_l1, k_l1, dq1_l0, init=True)
-                        T.copy(dq1_l0, WS_DQ1[cid, :, :])
-                        T.copy(WS_DQ1[cid, :, :], t1_ub)
+                        T.copy(dq1_l0, workspace_dq1[cid, :, :])
+                        T.copy(workspace_dq1[cid, :, :], t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
                         T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                     else:
                         T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
-                        T.copy(dq1_l0, WS_DQ1[cid, :, :])
-                        T.copy(WS_DQ1[cid, :, :], t1_ub)
+                        T.copy(dq1_l0, workspace_dq1[cid, :, :])
+                        T.copy(workspace_dq1[cid, :, :], t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
                         T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -964,8 +964,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # D12/D13: B4's half already sits in t1_ub (taken straight
                     # from L0C right after its GEMM). Here only B5b's half is
                     # fetched and the two are added in UB before the write-back.
-                    T.copy(dq0_l0, WS_DQ0[cid, :, :])
-                    T.copy(WS_DQ0[cid, :, :], xk_ub)
+                    T.copy(dq0_l0, workspace_dq0[cid, :, :])
+                    T.copy(workspace_dq0[cid, :, :], xk_ub)
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
                     T.copy(xk_ub, io_xk)
@@ -1443,14 +1443,12 @@ def gdn_bwd_v2(q, k, v, g, beta, h0, do, chunk_size=64, NT_MAX=None):
     ones_c = torch.ones(C, 16, dtype=dt, device=dev)
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)  # plan-10c: Gamma too
-    ws_dq1 = torch.empty(B * H, C, C, dtype=torch.float32, device=dev)
-    ws_dq0 = torch.empty(B * H, C, C, dtype=torch.float32, device=dev)
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
-        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam, ws_dq1, ws_dq0)
+        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     # outs_a = (dq, dh0, ws_dv, ws_dw, ws_dkt, ws_de, ws_dgam2, ws_dgam, ws_dk)
     outs_b = gdn_bwd_v2_scan2b(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, msk_j, ones_dv, ones_dk, ones_c,

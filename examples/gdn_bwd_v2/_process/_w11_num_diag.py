@@ -32,8 +32,6 @@ def run(tag, args):
     dtype = args[5]
     q, k, v, g, beta, h0, do = (_npu(q), _npu(k), _npu(v), _npu(g), _npu(beta), _npu(h0), _npu(do))
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
-    ws_dq1 = torch.empty(B * H, C, C, dtype=torch.float32).npu()
-    ws_dq0 = torch.empty(B * H, C, C, dtype=torch.float32).npu()
     torch.npu.synchronize()
     stat("ws_g", ws_g)
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype=dtype)(k, beta, ws_g, msk_j, idt)
@@ -44,7 +42,7 @@ def run(tag, args):
     torch.npu.synchronize()
     stat("ws_h", ws_h)
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
-        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam, ws_dq1, ws_dq0)
+        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
     for i, o in enumerate(outs_a):
         stat(f"s2a_out{i}", o)

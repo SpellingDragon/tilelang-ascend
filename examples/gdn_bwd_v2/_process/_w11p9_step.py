@@ -30,8 +30,6 @@ def main():
     print("STEP 0 inputs ready", flush=True)
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(1, 1, 64, 64)(g)
-    ws_dq1 = torch.empty(1, 64, 64, dtype=torch.float32).npu()
-    ws_dq0 = torch.empty(1, 64, 64, dtype=torch.float32).npu()
     torch.npu.synchronize()
     print("STEP 1 cumsum OK", flush=True)
 
@@ -44,7 +42,7 @@ def main():
     print("STEP 3 scan1 OK", flush=True)
 
     outs_a = gdn_bwd_v2_scan2a(1, 1, 64, 64, 64, 64, 64, 64, dtype=dt_s)(
-        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam, ws_dq1, ws_dq0)
+        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
     print("STEP 4 scan2a OK", flush=True)
 

@@ -88,8 +88,6 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
     dt = torch.float16 if dtype_str == "float16" else torch.float32
     qn, kn, vn, gn, bn, hn, don = (_npu(q), _npu(k), _npu(v), _npu(g), _npu(beta), _npu(h0), _npu(do))
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(gn)
-    ws_dq1 = torch.empty(B * H, C, C, dtype=torch.float32).npu()
-    ws_dq0 = torch.empty(B * H, C, C, dtype=torch.float32).npu()
     msk_m_t = torch.tril(torch.ones(64, 64, dtype=torch.float32)).npu()
     msk_j_t = torch.tril(torch.ones(64, 64, dtype=torch.float32), -1).npu()
     idt = torch.eye(64, dtype=torch.float32).npu()
@@ -97,7 +95,7 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype_str)(kn, bn, ws_g, msk_j_t, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype_str)(kn, vn, bn, ws_g, ws_a, hn)
     outs = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype_str)(
-        qn, kn, vn, don, bn, ws_g, ws_a, msk_m_t, ones_dv, ws_h, ws_gam, ws_dq1, ws_dq0)
+        qn, kn, vn, don, bn, ws_g, ws_a, msk_m_t, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
 
     for i, name in enumerate(gold):
