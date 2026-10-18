@@ -101,7 +101,11 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
 
     for i in range(len(gold)):
         np.save(f"/tmp/w11box_out{i}.npy", outs[i].float().cpu().numpy())
+    _dmode = os.environ.get("GDN_S2A_DW_DBG", "0")
     for i, name in enumerate(gold):
+        if _dmode in ("1", "2") and name == "out4_WS_DKT":
+            print("out4_WS_DKT SKIP (dump mode: box holds P/dO, not dKt)")
+            continue
         got = outs[i].float().cpu().numpy().reshape(gold[name].shape)
         r, bad = rel(got, gold[name])
         line = f"{name:14s} rel={r:.3e} nonfinite={bad} gold_max={float(np.abs(gold[name]).max()):.3e}"
@@ -122,6 +126,21 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
         # all-zero dump means the probe box was clobbered, not that the operand
         # is zero.
         print("PROBE-%s" % ("BROKEN-all-zero" if amax == 0.0 else "OK"))
+        dv_card = outs[2].float().cpu().numpy().reshape(64, 64)
+        np.save(f"/tmp/w11carddv_{_mode}.npy", dv_card)
+        # G2: once both dumps exist (two separate deterministic runs), recompute
+        # P^T dO on the host and cross-check against the golden and the card.
+        if _mode == "2" and not os.path.exists("/tmp/w11dump_1.npy"):
+            print("PROBE-PV-SKIP no /tmp/w11dump_1.npy (run the dw leg first)")
+        if _mode == "2" and os.path.exists("/tmp/w11dump_1.npy"):
+            pv = np.load("/tmp/w11dump_1.npy").astype(np.float64)
+            rec = pv.T @ got4.astype(np.float64)
+            dv_g = np.asarray(gold["out2_WS_DV"], np.float64)
+            r_rec, _ = rel(rec, dv_g)
+            r_card, _ = rel(dv_card.astype(np.float64), dv_g)
+            r_vs, _ = rel(rec, dv_card.astype(np.float64))
+            print(f"PV-recompute vs golden rel={r_rec:.3e} | card WS_DV vs golden "
+                  f"rel={r_card:.3e} | recompute vs card rel={r_vs:.3e}")
     print("S2ABOX-DONE")
 
 
