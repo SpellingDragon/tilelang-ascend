@@ -233,8 +233,12 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
             T.copy(S[bz, by, bx * C], g_ub)
             T.copy(Beta[bz, by, bx * C], be_ub)
             T.copy(MskJ[0, 0], msk_ub)
-            for (i, j) in T.Parallel(C, C):
-                gm_ub[i, j] = g_ub[i] - g_ub[j]
+            # D15: 2D Parallel + second-dim 1D index collapses to j=0 on card
+            # (solve_a only looked right because its g==0 case makes every
+            # index equal). Use the serial/serial idiom.
+            for i in T.serial(C):  # S7g: serial (no broadcast temp)
+                for j in T.serial(C):
+                    gm_ub[i, j] = g_ub[i] - g_ub[j]
             for (i, j) in T.Parallel(C, C):
                 gm_ub[i, j] = T.exp(gm_ub[i, j])
 
@@ -660,9 +664,13 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     T.gemm_v0(q_l1, k_l1, dp_l0, transpose_B=True, init=(hh == 0))
                 T.copy(dp_l0, workspace_lcc[cid, :, :])  # stash raw QK^T
-                # Gamma (aux lane, 3-loop exp idiom) -> P assembly
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = g_ub[i] - g_ub[j]
+                # Gamma (aux lane) -> P assembly.
+                # D15: a 1D buffer indexed by the SECOND dim inside a 2D Parallel
+                # collapses to j=0 on card; use the scan2b S7g idiom (both loop
+                # vars serial => both g_ub reads are scalar).
+                for i in T.serial(C):  # S7g: serial (no broadcast temp)
+                    for j in T.serial(C):
+                        aux_ub[i, j] = g_ub[i] - g_ub[j]
                 # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
                 # (test_gdn_bwd_v2.py:237). The neg that used to sit here
                 # flipped it to exp(gam_c - gam_r): the lower triangle then
@@ -910,15 +918,17 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     T.copy(Q[b, h, cc * C, hh * BK], q_l1)
                     if hh == 0:
-                        # D12: dqkt@K goes to its own single-shot L0C (dp_l0 is
-                        # dead after the dP dump at :850); an init=False target
-                        # here made codegen copy only 1 column into DQ.
-                        T.gemm_v0(da_l1, k_l1, dp_l0, init=True)
+                        # D12/D13: dqkt@K into its own single-shot L0C and take
+                        # it into UB immediately (one liveness window, no GM
+                        # round-trip, no realTailN).
+                        T.gemm_v0(da_l1, k_l1, dq1_l0, init=True)
+                        T.copy(dq1_l0, t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
                         T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                     else:
-                        T.gemm_v0(da_l1, k_l1, dp_l0, init=False)
+                        T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
+                        T.copy(dq1_l0, t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
                         T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -938,29 +948,14 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(dE_ub, WS_DE[b, h, cc * C])
                 T.copy(dgam_ub, WS_DGAM[b, h, cc * C])
                 for hh in range(bk_num):
-                    # D13: a slice with a loop variable in it (hh * BK) makes
-                    # copy_l0c_to_gm drop realTailN to 1 (1-column output).
-                    # bk_num == 1 -> use the whole-tile slice, which is identical
-                    # and keeps realTailN = 64.  D15: the two single-shot halves
-                    # are added in UB; workspace_ldk stays strictly 1W1R.
-                    if bk_num == 1:
-                        T.copy(dp_l0, workspace_ldk[cid, :, :])
-                        T.copy(workspace_ldk[cid, :, :], t1_ub)
-                        T.copy(dq0_l0, workspace_ldk[cid, :, :])
-                        T.copy(workspace_ldk[cid, :, :], xk_ub)
-                        for (i, j) in T.Parallel(C, BK):
-                            xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
-                        T.copy(xk_ub, io_xk)
-                        T.copy(io_xk, DQ[b, h, cc * C, 0])
-                    else:
-                        T.copy(dp_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], t1_ub)
-                        T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                        for (i, j) in T.Parallel(C, BK):
-                            xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
-                        T.copy(xk_ub, io_xk)
-                        T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
+                    # D12/D13: B4's half already sits in t1_ub (taken straight
+                    # from L0C right after its GEMM). Here only B5b's half is
+                    # fetched and the two are added in UB before the write-back.
+                    T.copy(dq0_l0, xk_ub)
+                    for (i, j) in T.Parallel(C, BK):
+                        xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
+                    T.copy(xk_ub, io_xk)
+                    T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
 
     return main
 
