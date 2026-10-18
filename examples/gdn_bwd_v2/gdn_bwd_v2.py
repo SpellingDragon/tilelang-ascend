@@ -526,10 +526,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         WS_DGAM2: T.Tensor([B, H, L, C], "float"),  # type: ignore  boundary out (S7f-E/D record)
         WS_DGAM: T.Tensor([B, H, L], "float"),  # type: ignore  boundary out (S7f-E)
         WS_DK: T.Tensor([B, H, L, DK], "float"),  # type: ignore  boundary out (S7f-E)
-        workspace_ldk: T.Tensor([B * H, C, DK], accum_dtype),  # type: ignore  workspace
+        workspace_ldk: T.Tensor([B * H, bk_num, C, BK], accum_dtype),  # type: ignore  half blocks
         workspace_lcc: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  workspace
         workspace_lcb: T.Tensor([B * H, C, BV], accum_dtype),  # type: ignore  workspace
-        workspace_lbd: T.Tensor([B * H, BV, DK], accum_dtype),  # type: ignore  workspace (dH half dump)
+        workspace_lbd: T.Tensor([B * H, bk_num, BV, BK], accum_dtype),  # type: ignore  workspace (dH half dump)
         workspace_lc16: T.Tensor([B * H, C, 16], accum_dtype),  # type: ignore  workspace
         workspace_vdk: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (Kt halves)
         workspace_w: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (-W halves)
@@ -662,8 +662,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_xk, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bek_l1)
                     T.gemm_v0(a_l1, bek_l1, dw0_l0, init=True)  # W half (temp)
-                    T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                    T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                    T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                    T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # -W half
                     T.copy(xk_ub, io_xk)
@@ -858,11 +858,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
                         T.tile.fill(x_ub, 0.0)
                         if hh == 0:
-                            T.copy(dh0_l0, workspace_lbd[cid, :, hh * BK])
-                            T.copy(workspace_lbd[cid, :, hh * BK], x_ub)
+                            T.copy(dh0_l0, workspace_lbd[cid, hh, :, :])
+                            T.copy(workspace_lbd[cid, hh, :, :], x_ub)
                         else:
-                            T.copy(dh1_l0, workspace_lbd[cid, :, hh * BK])
-                            T.copy(workspace_lbd[cid, :, hh * BK], x_ub)
+                            T.copy(dh1_l0, workspace_lbd[cid, hh, :, :])
+                            T.copy(workspace_lbd[cid, hh, :, :], x_ub)
                         for (i, j) in T.Parallel(BV, BK):
                             x_ub[i, j] = x_ub[i, j] + dhp_ub[i, j] * glast_ub[0]
                         # S7f: WS_D is fp32 GM -- fp32 ub direct copy (:750 form)
@@ -876,11 +876,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 for hh in range(bk_num):
                     # D13: range-unrolled so realTailN stays 64 (see B15 note)
                     if hh == 0:
-                        T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     else:
-                        T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # dW = -sum dVnew H_in
                     T.copy(xk_ub, io_xk)
@@ -936,24 +936,24 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(dq1_l0, workspace_dq1[cid, :, :])
                         T.copy(workspace_dq1[cid, :, :], t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
-                        T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     else:
                         T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
                         T.copy(dq1_l0, workspace_dq1[cid, :, :])
                         T.copy(workspace_dq1[cid, :, :], t1_ub)
                         T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
-                        T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     T.copy(xk_ub, WS_DK[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dW boundary (sign fold, S7e :789-790) + dKt boundary ----
                 for hh in T.serial(bk_num):
                     if hh == 0:
-                        T.copy(dkt0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dkt0_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     else:
-                        T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dkt1_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     if not _S2A_DBG:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
@@ -1015,7 +1015,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         DBeta: T.Tensor([B, H, L], "float"),  # type: ignore
         DG: T.Tensor([B, H, L], "float"),  # type: ignore
         WS_DA: T.Tensor([B, H, C, C], "float"),  # type: ignore  workspace (S7f-D dA record)
-        workspace_ldk: T.Tensor([B * H, C, DK], accum_dtype),  # type: ignore  workspace
+        workspace_ldk: T.Tensor([B * H, bk_num, C, BK], accum_dtype),  # type: ignore  half blocks
         workspace_lcc: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  workspace
         workspace_lcb: T.Tensor([B * H, C, BV], accum_dtype),  # type: ignore  workspace
         workspace_lc16: T.Tensor([B * H, C, 16], accum_dtype),  # type: ignore  workspace
@@ -1195,11 +1195,11 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.gemm_v0(a_l1, xk_l1, t21_l0, transpose_A=True, init=True)
                     # d(betaE) = rowsum(K .* t2) (k2 lane reloads K, S7e :805-821)
                     if hh == 0:
-                        T.copy(t20_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)  # xk = t2 half
+                        T.copy(t20_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)  # xk = t2 half
                     else:
-                        T.copy(t21_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)  # xk = t2 half
+                        T.copy(t21_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)  # xk = t2 half
                     T.tile.fill(k2_ub, 0.0)
                     T.copy(K[b, h, cc * C, hh * BK], io_xk)
                     T.copy(io_xk, k2_ub)
@@ -1303,12 +1303,12 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     if hh == 0:
                         T.gemm_v0(p_l1, k_l1, dkk0_l0, init=True)
-                        T.copy(dkk0_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dkk0_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     else:
                         T.gemm_v0(p_l1, k_l1, dkk1_l0, init=True)
-                        T.copy(dkk1_l0, workspace_ldk[cid, :, hh * BK])
-                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        T.copy(dkk1_l0, workspace_ldk[cid, hh, :, :])
+                        T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     if hh == 0:
                         for (i, j) in T.Parallel(C, BK):
                             dk0_ub[i, j] = dk0_ub[i, j] + xk_ub[i, j]
