@@ -142,7 +142,7 @@ pass_configs = {
 #    sum_{m<=r, same chunk} g_m; fwd gdn_chunk_cumsum.py:32-40 idiom verbatim,
 #    grid made H-safe: B*H*chunk_num, no VEC_NUM split).
 # ---------------------------------------------------------------------------
-@tilelang.jit(out_idx=[1], pass_configs=pass_configs)  # explicit index, see solve_a note
+@tilelang.jit(out_idx=[1, 2], pass_configs=pass_configs)  # explicit index, see solve_a note
 def gdn_bwd_v2_cumsum(B, H, L, C):
     chunk_num = T.ceildiv(L, C)
 
@@ -150,6 +150,7 @@ def gdn_bwd_v2_cumsum(B, H, L, C):
     def main(
         G: T.Tensor([B, H, L], "float"),  # type: ignore
         S: T.Tensor([B, H, L], "float"),  # type: ignore
+        GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
     ):
         with T.Kernel(B * H * chunk_num, threads=1, is_npu=True) as (cid):
             bx = cid % chunk_num
@@ -158,6 +159,8 @@ def gdn_bwd_v2_cumsum(B, H, L, C):
 
             g_ub = T.alloc_ub([C], "float")
             s_ub = T.alloc_ub([C], "float")
+            gm_ub = T.alloc_ub([C, C], "float")  # D15 plan-10c: Gamma here
+            rt_ub = T.alloc_ub([C, C], "float")  # row tile (vector-only kernel)
 
             T.tile.fill(s_ub, 0.0)
             T.copy(G[bz, by, bx * C], g_ub)
@@ -169,6 +172,17 @@ def gdn_bwd_v2_cumsum(B, H, L, C):
                 tmp = s_ub[i] + g_ub[i]
                 s_ub[i] = tmp
             T.copy(s_ub, S[bz, by, bx * C])
+            # D15 plan-10c: Gamma = exp(gam_r - gam_c) computed in this
+            # vector-only kernel (the two-broadcast form is proven here; the
+            # same form deadlocks inside the CV-mixed scan2a). scan2a/scan2b
+            # then read it as plain GM->UB copies.
+            T.tile.broadcast(gm_ub, s_ub, axis=0)   # gm = g_j (columns)
+            T.tile.broadcast(rt_ub, s_ub, axis=1)   # rt = g_i (rows)
+            for (i, j) in T.Parallel(C, C):
+                gm_ub[i, j] = rt_ub[i, j] - gm_ub[i, j]
+            for (i, j) in T.Parallel(C, C):
+                gm_ub[i, j] = T.exp(gm_ub[i, j])
+            T.copy(gm_ub, GAM[bz, by, bx, 0, 0])
 
     return main
 
@@ -521,6 +535,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         workspace_w: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (-W halves)
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
+        WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -573,7 +588,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             rowb_ub = T.alloc_ub([1, BV], accum_dtype)  # B9 second reduce stage
             pk2_ub = T.alloc_ub([C, C], accum_dtype)  # dP (B2 accum)
             aux_ub = T.alloc_ub([C, C], accum_dtype)  # raw QK^T / M / Gam lanes (B3)
-            rt_ub = T.alloc_ub([C, C], accum_dtype)  # D15 row tile (dedicated; dhp feeds AIC later)
             da_ub = T.alloc_ub([C, C], accum_dtype)  # P -> dGam -> d(QKt)
             xk_ub = T.alloc_ub([C, BK], accum_dtype)  # K half / product lane
             bq_ub = T.alloc_ub([C, BV], accum_dtype)  # dO -> E .* dO lane
@@ -670,16 +684,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.gemm_v0(q_l1, k_l1, dp_l0, transpose_B=True, init=(hh == 0))
                 T.copy(dp_l0, workspace_lcc[cid, :, :])  # stash raw QK^T
                 # Gamma (aux lane) -> P assembly.
-                # D15 plan-9b: two explicit 2D Broadcast tiles + a pure 2D
-                # subtract. The codegen emitted exactly these two Broadcasts
-                # even for the plain-2D spelling, but then collapsed the
-                # column tile to a scalar (g[0]) -- that is the j->0 bug.
-                # Plan-9's `g_ub[i] - aux[i,j]` emitted Sub(dst, g_ub[outer],
-                # ...), a UB scalar read, and the kernel hung on card.
-                T.tile.broadcast(aux_ub, g_ub, axis=0)  # aux = g_j (columns)
-                T.tile.broadcast(rt_ub, g_ub, axis=1)   # rt  = g_i (rows)
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = rt_ub[i, j] - aux_ub[i, j]  # g_i - g_j
+                # D15 plan-10c: Gamma is produced by the vector-only cumsum
+                # kernel (GAM[b,h,chunk]) and read here as a plain GM->UB copy.
+                # Both broadcast forms deadlock inside this CV-mixed kernel
+                # (plan-9 scalar read / plan-9b two-tile Sub + dedicated buffer,
+                # both 507014), while the identical form runs in cumsum/solve_a.
+                T.copy(WS_GAM[b, h, cc, 0, 0], aux_ub)
                 # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
                 # (test_gdn_bwd_v2.py:237). The neg that used to sit here
                 # flipped it to exp(gam_c - gam_r): the lower triangle then
@@ -697,9 +707,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(da_ub, pk2_ub)
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # raw .* Gam
-                T.copy(MskM[0, 0], dhp_ub)  # M -> dhp; aux keeps Gamma for dA
+                T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead here; baseline lane)
                 for (i, j) in T.Parallel(C, C):
-                    da_ub[i, j] = da_ub[i, j] * dhp_ub[i, j]  # P
+                    da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # P
                 T.copy(da_ub, io_cc)
                 T.copy(io_cc, workspace_vcc[cid, :, :])
                 T.copy(workspace_vcc[cid, :, :], p_l1)
@@ -887,18 +897,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # S7f-D/E: dGam accumulation record -> GM boundary (H3; the
                 # B11 merge in scan2b continues this record)
                 T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
-                # dA = (dP .* Gam) .* M -- plan-9b, same two-tile form as P.
-                # subtract. The codegen emitted exactly these two Broadcasts
-                # even for the plain-2D spelling, but then collapsed the
-                # column tile to a scalar (g[0]) -- that is the j->0 bug.
-                # Plan-9's `g_ub[i] - aux[i,j]` emitted Sub(dst, g_ub[outer],
-                # ...), a UB scalar read, and the kernel hung on card.
-                T.tile.broadcast(aux_ub, g_ub, axis=0)  # aux = g_j (columns)
-                T.tile.broadcast(rt_ub, g_ub, axis=1)   # rt  = g_i (rows)
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = rt_ub[i, j] - aux_ub[i, j]  # g_i - g_j
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = T.exp(aux_ub[i, j])
+                # dA = (dP .* Gam) .* M -- Gamma from GAM (plan-10c).
+                T.copy(WS_GAM[b, h, cc, 0, 0], aux_ub)
                 if _S2A_DBG:
                     # debug: Gam (fp32) through the DGAM2 box (dGam's production
                     # record is only needed for acceptance runs). Its column
@@ -906,9 +906,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(aux_ub, WS_DGAM2[b, h, cc * C, 0])
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = pk2_ub[i, j] * aux_ub[i, j]  # dP .* Gam (aux)
-                T.copy(MskM[0, 0], dhp_ub)  # M reload
+                T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead; baseline lane)
                 for (i, j) in T.Parallel(C, C):
-                    da_ub[i, j] = da_ub[i, j] * dhp_ub[i, j]  # d(QKt)
+                    da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # d(QKt)
                 if _S2A_DBG:
                     # debug: the UB dqkt (fp32) through the DKT box.
                     T.copy(da_ub, WS_DKT[b, h, cc * C, 0])
@@ -1437,13 +1437,13 @@ def gdn_bwd_v2(q, k, v, g, beta, h0, do, chunk_size=64, NT_MAX=None):
     ones_dk = torch.ones(DK, 16, dtype=dt, device=dev)
     ones_c = torch.ones(C, 16, dtype=dt, device=dev)
 
-    ws_g = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
+    ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)  # plan-10c: Gamma too
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
-        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h)
+        q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     # outs_a = (dq, dh0, ws_dv, ws_dw, ws_dkt, ws_de, ws_dgam2, ws_dgam, ws_dk)
     outs_b = gdn_bwd_v2_scan2b(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, msk_j, ones_dv, ones_dk, ones_c,
