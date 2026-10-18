@@ -781,6 +781,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # dVnew -> WS_DV boundary (main dtype)
                     T.copy(dvnew_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1_ub)
+                    if _S2A_DW_DBG:
+                        # debug: fp32 dVnew = P^T dO + Kt^T Delta' before the
+                        # fp16 write-back (DKT box; dqkt dump yields).
+                        T.copy(t1_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(t1_ub, io_bq)
                     T.copy(io_bq, WS_DV[b, h, cc * C, bv * BV])
                     # ---- W H^T half sum -> Vnew = U0 + (-W) H^T (S7e :685-689);
@@ -890,12 +894,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     else:
                         T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
                         T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
-                    if _S2A_DW_DBG:
-                        # debug: fp32 dW lane BEFORE the fp16 write-back (the
-                        # DKT box is skipped in debug mode). Splits
-                        # "dw0_l0 already has NaNs" from "the cast produces
-                        # them".
-                        T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # dW = -sum dVnew H_in
                     T.copy(xk_ub, io_xk)
