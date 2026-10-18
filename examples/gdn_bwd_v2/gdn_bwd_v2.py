@@ -594,6 +594,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.tile.fill(be_ub, 0.0)
                 T.tile.fill(zero_ub, 0.0)
                 T.copy(S[b, h, cc * C], g_ub)
+                if _S2A_DBG:
+                    # debug: g_ub (chunk-local cumsum S) through the DE box (fp32
+                    # [C]); DE's production write is skipped in debug mode.
+                    T.copy(g_ub, WS_DE[b, h, cc * C])
                 T.copy(Beta[b, h, cc * C], be_ub)
                 for i in T.Parallel(C):
                     e_ub[i] = T.exp(g_ub[i])
@@ -868,8 +872,14 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
                 # dA = (dP .* Gam) .* M (aux recomputes Gamma, 3-loop idiom;
                 # same sign fix as the P assembly above)
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = g_ub[i] - g_ub[j]
+                # D15 workaround: a 1D buffer indexed by the *second* dim inside a
+                # 2D T.Parallel collapses to j=0 on card (Gam[i,j] became
+                # exp(g_i - g_0): row10 all equal, diag != 1). Use the scan2b
+                # S7g idiom -- both loop vars serial, so both g_ub reads are
+                # scalar. (serial-outer/parallel-inner hit 507015.)
+                for i in T.serial(C):  # S7g: serial (no broadcast temp)
+                    for j in T.serial(C):
+                        aux_ub[i, j] = g_ub[i] - g_ub[j]
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 if _S2A_DBG:
@@ -924,19 +934,33 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     if not _S2A_DBG:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
-                T.copy(dE_ub, WS_DE[b, h, cc * C])
+                if not _S2A_DBG:
+                    T.copy(dE_ub, WS_DE[b, h, cc * C])
                 T.copy(dgam_ub, WS_DGAM[b, h, cc * C])
                 for hh in range(bk_num):
-                    # D13: range-unrolled (realTailN=64) + D12 single-shot halves
-                    # added in UB; workspace_ldk stays strictly 1W1R.
-                    T.copy(dp_l0, workspace_ldk[cid, :, hh * BK])
-                    T.copy(workspace_ldk[cid, :, hh * BK], t1_ub)   # dqkt @ K
-                    T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
-                    T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)   # (E.*dO) @ H_in
-                    for (i, j) in T.Parallel(C, BK):
-                        xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
-                    T.copy(xk_ub, io_xk)
-                    T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
+                    # D13: a slice with a loop variable in it (hh * BK) makes
+                    # copy_l0c_to_gm drop realTailN to 1 (1-column output).
+                    # bk_num == 1 -> use the whole-tile slice, which is identical
+                    # and keeps realTailN = 64.  D15: the two single-shot halves
+                    # are added in UB; workspace_ldk stays strictly 1W1R.
+                    if bk_num == 1:
+                        T.copy(dp_l0, workspace_ldk[cid, :, :])
+                        T.copy(workspace_ldk[cid, :, :], t1_ub)
+                        T.copy(dq0_l0, workspace_ldk[cid, :, :])
+                        T.copy(workspace_ldk[cid, :, :], xk_ub)
+                        for (i, j) in T.Parallel(C, BK):
+                            xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
+                        T.copy(xk_ub, io_xk)
+                        T.copy(io_xk, DQ[b, h, cc * C, 0])
+                    else:
+                        T.copy(dp_l0, workspace_ldk[cid, :, hh * BK])
+                        T.copy(workspace_ldk[cid, :, hh * BK], t1_ub)
+                        T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
+                        T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                        for (i, j) in T.Parallel(C, BK):
+                            xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
+                        T.copy(xk_ub, io_xk)
+                        T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
 
     return main
 

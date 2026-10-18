@@ -76,6 +76,7 @@ def run(dtype_str="float16"):
 
     dqkt_card = outs[4].float().cpu().numpy().reshape(64, 64)   # WS_DKT  <- dqkt
     gam_card = outs[6].float().cpu().numpy().reshape(64, 64)    # WS_DGAM2 <- Gam
+    g_card = outs[5].float().cpu().numpy().reshape(64)          # WS_DE   <- g_ub (S)
     dq_card = outs[0].float().cpu().numpy().reshape(64, 64)
     from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd  # noqa: E402,F401
     # golden Gam
@@ -83,6 +84,7 @@ def run(dtype_str="float16"):
     _, cache = _np_chunk_fwd(64, 64, 64, q2[0, 0].numpy(), k2[0, 0].numpy(), v2[0, 0].numpy(),
                              beta2[0, 0].numpy(), g2[0, 0].numpy(), h02[0, 0].numpy(), 64)
     gam_g = cache[0]["gam_2d"]
+    S_g = __import__("numpy").cumsum(g2[0, 0].numpy())
     r0, b0 = rel(dqkt_card, dqkt_g)
     rg, _ = rel(gam_card, gam_g)
     r2, b2 = rel(dq_card, dq_g)
@@ -96,12 +98,20 @@ def run(dtype_str="float16"):
     nz_G, head_G = cols(dq_g)
     print(f"COLS-dqkt  nz={nz_d}/64 cols[:20]={head_d}  rel_vs_gold={r0:.3e}")
     print(f"COLS-Gam   nz={nz_g}/64 cols[:20]={head_g}  rel_vs_gold={rg:.3e}")
+    print(f"G-UB card[:6]={np.round(g_card[:6], 4).tolist()} goldS[:6]={np.round(S_g[:6], 4).tolist()} "
+          f"absmax_card={float(np.abs(g_card).max()):.3e} absmax_gold={float(np.abs(S_g).max()):.3e}")
+    print(f"GAM-row10 card={np.round(gam_card[10, :6], 4).tolist()} gold={np.round(gam_g[10, :6], 4).tolist()}")
+    print(f"GAM-row63 card={np.round(gam_card[63, :4], 4).tolist()} gold={np.round(gam_g[63, :4], 4).tolist()}")
+    print(f"GAM-diag  card={np.round(np.diag(gam_card)[:4], 4).tolist()} "
+          f"gam_offdiag_absmax_card={float(np.abs(gam_card - np.diag(np.diag(gam_card))).max()):.3e}")
     print(f"COLS-DQ    nz={nz_G}/64")  # golden reference only
     print(f"CHK-DQ     rel={r2:.3e} nonfinite={b2}")
-    if nz_g < 64:
+    if float(np.abs(g_card).max()) < 1e-6:
+        print("VERDICT g_ub-ZERO => scan2a's S fill is empty (D14); Gam==1 follows")
+    elif nz_g < 64:
         print("VERDICT Gam-partial => 2D Parallel exp covers only part of the columns (D9)")
     elif r2 > 5e-2:
-        print("VERDICT Gam-full but DQ still wrong => L0C->GM realTailN (D13) or GEMM")
+        print("VERDICT g_ub+ Gam full but DQ still wrong => L0C->GM realTailN (D13) or GEMM")
     else:
         print("VERDICT all-good")
     print("S2ADBG-DONE")
