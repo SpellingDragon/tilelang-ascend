@@ -89,11 +89,12 @@ from tilelang import language as T
 # dKt term is unimplemented), and this dump and the dKt zero-write are
 # mutually exclusive. Never set for acceptance runs.
 _S2A_DBG = os.environ.get("GDN_S2A_DBG", "0") == "1"
-# Second debug switch (compile-time constant; default off). With
-# GDN_S2A_DW_DBG=1, scan2a dumps the fp16 P (io_cc, cast back to fp32) through
-# the DKT box and the dKt zero-write + dqkt dump both yield, so the box has a
-# single writer in that mode.
-_S2A_DW_DBG = os.environ.get("GDN_S2A_DW_DBG", "0") == "1"
+# Second debug switch (compile-time mode; default 0 = off). Any non-zero mode
+# makes the dKt zero-write and the dqkt dump yield, so the DKT box has a single
+# writer:
+#   1 = fp16 P (io_cc cast back to fp32), the A operand of dVnew = P^T dO
+#   2 = fp32 dO (bq_ub), the B operand of the same GEMM
+_S2A_DW_DBG = int(os.environ.get("GDN_S2A_DW_DBG", "0"))
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
 pass_configs = {
@@ -721,7 +722,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # P
                 T.copy(da_ub, io_cc)
-                if _S2A_DW_DBG:
+                if _S2A_DW_DBG == 1:
                     # debug: the fp16 P (cast back to fp32). inf here means the
                     # upper triangle was not zeroed before the cast.
                     T.copy(io_cc, aux_ub)
@@ -737,6 +738,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.tile.fill(bq_ub, 0.0)
                     T.copy(DO[b, h, cc * C, bv * BV], io_bq)
                     T.copy(io_bq, bq_ub)
+                    if _S2A_DW_DBG == 2:
+                        # debug: fp32 dO, the B operand of dVnew = P^T dO.
+                        T.copy(bq_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(bq_ub, io_bq)
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bq_l1)

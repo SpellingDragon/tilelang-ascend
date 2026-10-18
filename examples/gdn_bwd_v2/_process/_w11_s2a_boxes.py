@@ -99,6 +99,8 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
         qn, kn, vn, don, bn, ws_g, ws_a, msk_m_t, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
 
+    for i in range(len(gold)):
+        np.save(f"/tmp/w11box_out{i}.npy", outs[i].float().cpu().numpy())
     for i, name in enumerate(gold):
         got = outs[i].float().cpu().numpy().reshape(gold[name].shape)
         r, bad = rel(got, gold[name])
@@ -107,15 +109,18 @@ def run(dtype_str, imode="normal", golden_only=False, h0mode="zero"):
             r2, _ = rel(got, alt[name])
             line += f"  [alt(dvnew-form) rel={r2:.3e}]"
         print(line)
-    if os.environ.get("GDN_S2A_DW_DBG") == "1":
+    _mode = os.environ.get("GDN_S2A_DW_DBG", "0")
+    if _mode not in ("", "0"):
         got4 = outs[4].float().cpu().numpy().reshape(64, 64)
+        np.save(f"/tmp/w11dump_{_mode}.npy", got4)
         amax = float(np.abs(got4).max())
-        print(f"DUMP-P absmax={amax:.3e} "
-              f"nan={int(np.isnan(got4).sum())} inf={int(np.isinf(got4).sum())} "
+        tag = "P" if _mode == "1" else "dO"
+        print(f"DUMP-{tag} absmax={amax:.3e} nan={int(np.isnan(got4).sum())} "
+              f"inf={int(np.isinf(got4).sum())} "
               f"upper_absmax={float(np.abs(np.triu(got4, 1)).max()):.3e}")
-        # invariant self-check: a correct P has a non-zero lower triangle, so an
-        # all-zero dump means the probe itself is broken (e.g. another writer
-        # clobbered the box), not that the kernel produced zeros.
+        # invariant self-check: a live operand is never all-zero here, so an
+        # all-zero dump means the probe box was clobbered, not that the operand
+        # is zero.
         print("PROBE-%s" % ("BROKEN-all-zero" if amax == 0.0 else "OK"))
     print("S2ABOX-DONE")
 
