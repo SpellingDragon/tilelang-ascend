@@ -403,3 +403,32 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 本波纯设计：不写 kernel 实现（下一波）、不出性能数值承诺（待真机）、不做 bf16/变长（裁决③④）。
 §2/§3 数学与 `chunk_gated_delta_rule` 参考逐式核对**无冲突**（fla H∈(DK,DV) ↔ 本设计 S∈(DV,DK)
 转置折算），golden 对拍实证 `MATH_CHECK: PASS`。
+
+## 18. 平台约束与未实现项（窗十一/十二实测追加，2026-10-18）
+
+> 本节不是"风险点"，而是**已验证的平台语义**。任何后续改动必须先对照本节。
+
+### 18.1 平台语义（均有生成码/源码级证据）
+
+| # | 约束 | 证据 | 对本算子的影响 |
+|---|---|---|---|
+| C1 | **cv-sync 只为 `workspace_idx` 内的张量建跨核 set/wait flag**。普通输入张量即使跨核读写也不建 | AIC 写 `WS_DQ1/0` 后无 set，AIV 直接读 → DQ 全 0；改入 workspace_idx 后 DQ 恢复（notes [45]） | 所有跨核交接的 GM 缓冲**必须**声明为 workspace_idx |
+| C2 | **1D 源按第二维索引的列广播会退化为 `g[0]`**（`T.Parallel(C,C)` 内 `b_ub[j]`） | 生成码为两次 Broadcast + `Adds(..., -col.GetValue(0))`；卡上 diag≠1（notes [32]/[40]） | 列广播一律改由**向量-only 核**产出（cumsum 的 GAM），混合核内只做 GM→UB 读 |
+| C3 | **L0C→GM 的 `realTailN` 在切片含标量尾索引时退化为 1**（只搬 1 列） | `copy_l0c_to_gm(..., 64, 64, 1, 0)`；改 4-D `[B*H,bk_num,C,BK]` + 前置索引后为 64（notes [31]/[46]） | 半块交接必须用**前置标量索引**的全 2-D 切片 |
+| C4 | **预算悬崖**：910B L0C 128 KiB、UB 191.75 KiB；scan1 静态 209.5 KiB（109%）、scan2a 91% | `codegen_ascend.cc` 常量 + `_s7f_ub_budget.py` | 任何新增 alloc 都可能改变 liveness/spill；**改布局必须单点+对照** |
+| C5 | **未初始化读会直接变成 box 垃圾**：auto workspace 由 runtime `empty` 分配 | Δ′ 首块、dKt 未实现 → DKT 3.8e30、DGAM 3.2e17（notes [47]） | 首块/未实现项必须显式置 0 |
+
+### 18.2 未实现项（当前按 0 处理，不得默认其正确）
+
+| 项 | 现状 | 影响 |
+|---|---|---|
+| **dKt = Vnew·Δ'ᵀ**（B9/B10 跨 chunk 项） | 无 GEMM 实现；`WS_DKT` 恒 0 | 单 chunk 与 golden 一致；**多 chunk 数值不正确**（已知 gap） |
+| 变长 seq_lens、bf16 | 不支持（v1 遗留裁决③④） | — |
+
+### 18.3 已否清单（重试必须给出新的因果理由）
+
+| 类别 | 已试形态 | 结果 |
+|---|---|---|
+| 列广播算侧绕行 | 双 `T.serial`、`[1,C]`+`T.tile.broadcast`、`2D 源列索引`、`退化+transpose`、GM 行→broadcast、四槽拆分 | 全部 507014/507015 或回归；**唯一可行：向量-only 核产出** |
+| 去别名（拆专用缓冲） | `ldk` 四槽、`vcb` 三拆、`dvnew` 专用 | 三次全部回归（dv 0.485→nan）；别名是表象，真因是 C1/C4 |
+| 常数输入验证 | solve_a/scan1 只用 g≡0 | 使 C2 潜伏七个窗口 |
