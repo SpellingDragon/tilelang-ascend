@@ -105,6 +105,9 @@ def run(dtype_str="float16"):
     print(f"GAM-diag  card={np.round(np.diag(gam_card)[:4], 4).tolist()} "
           f"gam_offdiag_absmax_card={float(np.abs(gam_card - np.diag(np.diag(gam_card))).max()):.3e}")
     print(f"COLS-DQ    nz={nz_G}/64")  # golden reference only
+    print(f"DQ card[0,:4]={np.round(dq_card[0, :4], 4).tolist()} gold[0,:4]={np.round(dq_g[0, :4], 4).tolist()}")
+    print(f"DQ card[40,:4]={np.round(dq_card[40, :4], 4).tolist()} gold[40,:4]={np.round(dq_g[40, :4], 4).tolist()}")
+    print(f"DQ absmax card={float(np.abs(dq_card).max()):.3e} gold={float(np.abs(dq_g).max()):.3e}")
     print(f"CHK-DQ     rel={r2:.3e} nonfinite={b2}")
     if float(np.abs(g_card).max()) < 1e-6:
         print("VERDICT g_ub-ZERO => scan2a's S fill is empty (D14); Gam==1 follows")
