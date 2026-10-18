@@ -101,6 +101,8 @@ from tilelang import language as T  # noqa: E402
 
 from gdn_bwd_v2 import pass_configs  # noqa: E402
 
+_S2A_DBG = False  # cut probe: debug dumps off
+
 
 ''' + fn_text + """
 

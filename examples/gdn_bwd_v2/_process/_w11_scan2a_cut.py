@@ -52,6 +52,8 @@ from tilelang import language as T  # noqa: E402
 
 from gdn_bwd_v2 import pass_configs  # noqa: E402
 
+_S2A_DBG = False  # cut probe: debug dumps off
+
 
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
               workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28],
@@ -93,6 +95,7 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
         workspace_w: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (-W halves)
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
+        WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -174,6 +177,10 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                 T.tile.fill(be_ub, 0.0)
                 T.tile.fill(zero_ub, 0.0)
                 T.copy(S[b, h, cc * C], g_ub)
+                if _S2A_DBG:
+                    # debug: g_ub (chunk-local cumsum S) through the DE box (fp32
+                    # [C]); DE's production write is skipped in debug mode.
+                    T.copy(g_ub, WS_DE[b, h, cc * C])
                 T.copy(Beta[b, h, cc * C], be_ub)
                 for i in T.Parallel(C):
                     e_ub[i] = T.exp(g_ub[i])
@@ -238,11 +245,22 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                         T.gemm_v0(q_l1, k_l1, dp_l0, transpose_B=True, init=(hh == 0))
                     T.copy(dp_l0, workspace_lcc[cid, :, :])  # stash raw QK^T
                 if cut >= 4:
-                    # Gamma (aux lane, 3-loop exp idiom) -> P assembly
-                    for (i, j) in T.Parallel(C, C):
-                        aux_ub[i, j] = g_ub[i] - g_ub[j]
-                    for (i, j) in T.Parallel(C, C):
-                        aux_ub[i, j] = zero_ub[i] - aux_ub[i, j]
+                    # Gamma (aux lane) -> P assembly.
+                    # D15 plan-10c: Gamma is produced by the vector-only cumsum
+                    # kernel (GAM[b,h,chunk]) and read here as a plain GM->UB copy.
+                    # Both broadcast forms deadlock inside this CV-mixed kernel
+                    # (plan-9 scalar read / plan-9b two-tile Sub + dedicated buffer,
+                    # both 507014), while the identical form runs in cumsum/solve_a.
+                    T.copy(WS_GAM[b, h, cc, 0, 0], aux_ub)
+                    # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
+                    # (test_gdn_bwd_v2.py:237). The neg that used to sit here
+                    # flipped it to exp(gam_c - gam_r): the lower triangle then
+                    # reached ~1e13, P overflowed fp16 to inf and the mask mul
+                    # turned it into nan (w11 diag: s2a out0/3/4/8 nan). The old
+                    # `zero_ub[i] - aux_ub[i, j]` spelling (which carried that
+                    # neg) also lowered to a 4B-stepped, non-32B-aligned VEC
+                    # address in a 2D Parallel -> on-card 507015 (fixp 0xd8);
+                    # both problems disappear with the direct exp below.
                     for (i, j) in T.Parallel(C, C):
                         aux_ub[i, j] = T.exp(aux_ub[i, j])
                     T.copy(workspace_lcc[cid, :, :], da_ub)  # raw
@@ -251,7 +269,7 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     T.copy(da_ub, pk2_ub)
                     for (i, j) in T.Parallel(C, C):
                         da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # raw .* Gam
-                    T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead here)
+                    T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead here; baseline lane)
                     for (i, j) in T.Parallel(C, C):
                         da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # P
                     T.copy(da_ub, io_cc)
@@ -366,8 +384,11 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                             T.copy(WS_H[b, h, cc, bv * BV, hh * BK], hin_l1)  # H_in reload (GM->L1 direct)
                             T.copy(Q[b, h, cc * C, hh * BK], q_l1)
                             # B5b: dQ_hh += (E .* dO) H_in_hh
+                            # D12: a constant init=True keeps this L0C a single-shot
+                            # GEMM; an accumulate target (init=False / data-dependent
+                            # init) makes codegen emit a 1-column copy_l0c_to_gm.
                             if hh == 0:
-                                T.gemm_v0(t1_l1, hin_l1, dq0_l0, init=(bv == 0))
+                                T.gemm_v0(t1_l1, hin_l1, dq0_l0, init=True)
                             else:
                                 T.gemm_v0(t1_l1, hin_l1, dq1_l0, init=(bv == 0))
                             # B5c: dH_hh += (E .* dO)^T Q_hh
@@ -388,7 +409,12 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                                 T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
                         # ---- B15: dH half -> WS_D relay (dh0 for the first chunk);
                         #      B9 vec part: dH += exp(gam_{n-1}) Delta' ----
-                        for hh in T.serial(bk_num):
+                        # D13: python range (compile-time unroll) instead of T.serial.
+                        # copy_l0c_to_gm's realTailN is inferred as 1 when the GM slice
+                        # contains a loop variable (hh * BK); unrolling makes the slice
+                        # constant so the copy covers all BK columns (dh0's output was
+                        # 1 column wide on card).
+                        for hh in range(bk_num):
                             T.tile.fill(dhp_ub, 0.0)
                             T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
                             T.tile.fill(x_ub, 0.0)
@@ -409,7 +435,8 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     # ---- dW -> WS_DW boundary (sign fold, S7e :789-793; the dw
                     #      half boxes become the B4 dK-part accumulators after this
                     #      write-back) ----
-                    for hh in T.serial(bk_num):
+                    for hh in range(bk_num):
+                        # D13: range-unrolled so realTailN stays 64 (see B15 note)
                         if hh == 0:
                             T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -434,34 +461,47 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     # S7f-D/E: dGam accumulation record -> GM boundary (H3; the
                     # B11 merge in scan2b continues this record)
                     T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
-                    # dA = (dP .* Gam) .* M (aux recomputes Gamma, 3-loop idiom)
+                    # dA = (dP .* Gam) .* M -- Gamma from GAM (plan-10c).
+                    T.copy(WS_GAM[b, h, cc, 0, 0], aux_ub)
+                    if _S2A_DBG:
+                        # debug: Gam (fp32) through the DGAM2 box (dGam's production
+                        # record is only needed for acceptance runs). Its column
+                        # extent tells whether the 2D Parallel exp covers 64 columns.
+                        T.copy(aux_ub, WS_DGAM2[b, h, cc * C, 0])
                     for (i, j) in T.Parallel(C, C):
-                        aux_ub[i, j] = g_ub[i] - g_ub[j]
-                    for (i, j) in T.Parallel(C, C):
-                        aux_ub[i, j] = zero_ub[i] - aux_ub[i, j]
-                    for (i, j) in T.Parallel(C, C):
-                        aux_ub[i, j] = T.exp(aux_ub[i, j])
-                    for (i, j) in T.Parallel(C, C):
-                        da_ub[i, j] = pk2_ub[i, j] * aux_ub[i, j]  # dP .* Gam
-                    T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead)
+                        da_ub[i, j] = pk2_ub[i, j] * aux_ub[i, j]  # dP .* Gam (aux)
+                    T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead; baseline lane)
                     for (i, j) in T.Parallel(C, C):
                         da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # d(QKt)
+                    if _S2A_DBG:
+                        # debug: the UB dqkt (fp32) through the DKT box.
+                        T.copy(da_ub, WS_DKT[b, h, cc * C, 0])
                     # ---- B4: dQ_hh += d(QKt) K_hh ; dK part_hh = d(QKt)^T Q_hh
                     #      (the B4 dK part reuses the dw half boxes: dW is written
                     #      out to its boundary below first) ----
                     T.copy(da_ub, io_cc)
                     T.copy(io_cc, workspace_vcc[cid, :, :])
                     T.copy(workspace_vcc[cid, :, :], da_l1)
+                    if _S2A_DBG:
+                        # debug: dqkt (UB) already went to WS_DKT above; keep this
+                        # block as the chain marker only (no extra copies here --
+                        # an extra workspace_vcc read breaks the CV sync pairing).
+                        pass
                     for hh in T.serial(bk_num):
                         T.copy(K[b, h, cc * C, hh * BK], k_l1)
                         T.copy(Q[b, h, cc * C, hh * BK], q_l1)
                         if hh == 0:
-                            T.gemm_v0(da_l1, k_l1, dq0_l0, init=False)
+                            # D12/D13: dqkt@K into its own single-shot L0C and take
+                            # it into UB immediately (one liveness window, no GM
+                            # round-trip, no realTailN).
+                            T.gemm_v0(da_l1, k_l1, dq1_l0, init=True)
+                            T.copy(dq1_l0, t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
                             T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
                         else:
                             T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
+                            T.copy(dq1_l0, t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
                             T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
@@ -474,17 +514,19 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                         else:
                             T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
                             T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                        T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
+                        if not _S2A_DBG:
+                            T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                     # ---- dE / dgam scalar boundaries + DQ write-back ----
-                    T.copy(dE_ub, WS_DE[b, h, cc * C])
+                    if not _S2A_DBG:
+                        T.copy(dE_ub, WS_DE[b, h, cc * C])
                     T.copy(dgam_ub, WS_DGAM[b, h, cc * C])
-                    for hh in T.serial(bk_num):
-                        if hh == 0:
-                            T.copy(dq0_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                        else:
-                            T.copy(dq1_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                    for hh in range(bk_num):
+                        # D12/D13: B4's half already sits in t1_ub (taken straight
+                        # from L0C right after its GEMM). Here only B5b's half is
+                        # fetched and the two are added in UB before the write-back.
+                        T.copy(dq0_l0, xk_ub)
+                        for (i, j) in T.Parallel(C, BK):
+                            xk_ub[i, j] = xk_ub[i, j] + t1_ub[i, j]
                         T.copy(xk_ub, io_xk)
                         T.copy(io_xk, DQ[b, h, cc * C, hh * BK])
 
@@ -514,7 +556,7 @@ if __name__ == "__main__":
     ones_dv = torch.ones(DV, 16, dtype=dt, device="npu")
 
     try:
-        ws_g = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
+        ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
         ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype="float16")(
             k, beta, ws_g, msk_j, idt)
         ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, BV, BK, dtype="float16")(
@@ -526,7 +568,7 @@ if __name__ == "__main__":
 
     try:
         ker = scan2a_cut(B, H, T_len, DK, DV, C, BV, BK, cut, dtype="float16")
-        out = ker(q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h)
+        out = ker(q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
         torch.npu.synchronize()
         print(f"S2ACUT-{cut}-PASS")
     except Exception as e:  # noqa: BLE001
