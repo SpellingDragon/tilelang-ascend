@@ -1,0 +1,38 @@
+# _w11p9_one.py — plan-9b 单 case 快检（L0 basic, fp16）：先确认不再挂死 + dq 落点
+import sys
+
+sys.path.insert(0, "/tmp")
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+
+try:
+    import torch_npu  # noqa: F401,E402
+except ImportError:
+    pass
+
+from test_gdn_bwd_v2 import (  # noqa: E402
+    _ITEMS, _case_inputs, _golden_item, _npu, check_precision,
+)
+from gdn_bwd_v2 import gdn_bwd_v2  # noqa: E402
+
+
+def main(dtype="float16"):
+    (q, k, v, g, beta, h0, do), gold = _case_inputs(1, 1, 64, 64, 64, dtype, "zero", False)
+    dq, dk, dv, dbeta, dg, dh0 = gdn_bwd_v2(
+        _npu(q), _npu(k), _npu(v), _npu(g), _npu(beta), _npu(h0), _npu(do))
+    torch.npu.synchronize()
+    got = {"dq": dq.cpu().float(), "dk": dk.cpu().float(), "dv": dv.cpu().float(),
+           "dbeta": dbeta.cpu().float(), "dg": dg.cpu().float(), "dh0": dh0.cpu().float()}
+    idts = {"dq": dtype, "dk": dtype, "dv": dtype, "dbeta": "float32",
+            "dg": "float32", "dh0": dtype}
+    allok = True
+    for item in _ITEMS:
+        ref = np.concatenate([_golden_item(gold, item, b) for b in range(1)], axis=0)
+        passed, ratio, max_abs = check_precision(got[item], ref, idts[item])
+        print(f"ONE {item} rel= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
+        allok &= passed
+    print(f"ONE-DONE all={'PASS' if allok else 'FAIL'}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "float16")

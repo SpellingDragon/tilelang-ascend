@@ -60,8 +60,9 @@ def run(dtype_str="float16"):
     ws_h = gdn_bwd_v2_scan1(1, 1, 64, 64, 64, 64, 64, 64, dtype=dtype_str)(kn, vn, bn, ws_g, ws_a, hn)
     torch.npu.synchronize()
     h_card = ws_h.float().cpu().numpy()[0, 0, 1]
-    print(f"CHK-H  rel={rel(h_card, Sf):.3e}  card_absmax={float(np.abs(h_card).max()):.3e}")
-    if rel(h_card, Sf) < 5e-3:
+    Sf2 = Sf[0] if Sf.ndim == 3 else Sf
+    print(f"CHK-H  rel={rel(h_card, Sf2):.3e}  card_absmax={float(np.abs(h_card).max()):.3e}")
+    if rel(h_card, Sf2) < 5e-3:
         print("VERDICT scan1-H-OK (solve_a fix holds on the real g != 0 distribution)")
     else:
         print("VERDICT scan1-H-BAD => remaining error inside scan1/solve_a beyond D15")
