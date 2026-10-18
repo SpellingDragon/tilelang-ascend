@@ -573,6 +573,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             rowb_ub = T.alloc_ub([1, BV], accum_dtype)  # B9 second reduce stage
             pk2_ub = T.alloc_ub([C, C], accum_dtype)  # dP (B2 accum)
             aux_ub = T.alloc_ub([C, C], accum_dtype)  # raw QK^T / M / Gam lanes (B3)
+            rt_ub = T.alloc_ub([C, C], accum_dtype)  # D15 row tile (dedicated; dhp feeds AIC later)
             da_ub = T.alloc_ub([C, C], accum_dtype)  # P -> dGam -> d(QKt)
             xk_ub = T.alloc_ub([C, BK], accum_dtype)  # K half / product lane
             bq_ub = T.alloc_ub([C, BV], accum_dtype)  # dO -> E .* dO lane
@@ -676,9 +677,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # Plan-9's `g_ub[i] - aux[i,j]` emitted Sub(dst, g_ub[outer],
                 # ...), a UB scalar read, and the kernel hung on card.
                 T.tile.broadcast(aux_ub, g_ub, axis=0)  # aux = g_j (columns)
-                T.tile.broadcast(dhp_ub, g_ub, axis=1)  # dhp = g_i (rows)
+                T.tile.broadcast(rt_ub, g_ub, axis=1)   # rt  = g_i (rows)
                 for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = dhp_ub[i, j] - aux_ub[i, j]  # g_i - g_j
+                    aux_ub[i, j] = rt_ub[i, j] - aux_ub[i, j]  # g_i - g_j
                 # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
                 # (test_gdn_bwd_v2.py:237). The neg that used to sit here
                 # flipped it to exp(gam_c - gam_r): the lower triangle then
@@ -893,9 +894,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # Plan-9's `g_ub[i] - aux[i,j]` emitted Sub(dst, g_ub[outer],
                 # ...), a UB scalar read, and the kernel hung on card.
                 T.tile.broadcast(aux_ub, g_ub, axis=0)  # aux = g_j (columns)
-                T.tile.broadcast(dhp_ub, g_ub, axis=1)  # dhp = g_i (rows)
+                T.tile.broadcast(rt_ub, g_ub, axis=1)   # rt  = g_i (rows)
                 for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = dhp_ub[i, j] - aux_ub[i, j]  # g_i - g_j
+                    aux_ub[i, j] = rt_ub[i, j] - aux_ub[i, j]  # g_i - g_j
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 if _S2A_DBG:
