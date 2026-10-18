@@ -74,50 +74,36 @@ def run(dtype_str="float16"):
         qn, kn, vn, don, bn, ws_g, ws_a, msk_m, ones_dv, ws_h)
     torch.npu.synchronize()
 
-    da_l1_card = outs[4].float().cpu().numpy().reshape(64, 64)   # WS_DKT <- GM dqkt
-    da_ub_card = outs[6].float().cpu().numpy().reshape(64, 64)   # WS_DGAM2 <- da_ub
+    dqkt_card = outs[4].float().cpu().numpy().reshape(64, 64)   # WS_DKT  <- dqkt
+    gam_card = outs[6].float().cpu().numpy().reshape(64, 64)    # WS_DGAM2 <- Gam
     dq_card = outs[0].float().cpu().numpy().reshape(64, 64)
-    dqkt_card = da_ub_card
-    r1, b1 = rel(da_l1_card, dq_g)        # fresh dqkt@K  vs golden DQ
-    r0, b0 = rel(da_ub_card, dqkt_g)      # UB dqkt       vs golden dqkt
-    rc, _ = rel(da_l1_card, dq_g)
+    from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd  # noqa: E402,F401
+    # golden Gam
+    (q2, k2, v2, g2, beta2, h02, do2), _ = _case_inputs(1, 1, 64, 64, 64, dtype_str, "zero", False)
+    _, cache = _np_chunk_fwd(64, 64, 64, q2[0, 0].numpy(), k2[0, 0].numpy(), v2[0, 0].numpy(),
+                             beta2[0, 0].numpy(), g2[0, 0].numpy(), h02[0, 0].numpy(), 64)
+    gam_g = cache[0]["gam_2d"]
+    r0, b0 = rel(dqkt_card, dqkt_g)
+    rg, _ = rel(gam_card, gam_g)
     r2, b2 = rel(dq_card, dq_g)
-    print(f"CARD da_ub absmax={float(np.abs(da_ub_card).max()):.3e} "
-          f"da_l1 absmax={float(np.abs(da_l1_card).max()):.3e}")
-    print(f"CHK-freshGEMM(dqkt@K) vs golden DQ rel={r1:.3e}")
-    print(f"CHK-UB dqkt          vs golden dqkt rel={r0:.3e}")
-    print(f"CHK-DQ(out0)         vs golden DQ   rel={r2:.3e}")
-    if r1 < 5e-3 and r2 > 5e-2:
-        print("VERDICT da_l1-OK => GEMM on da_l1 is fine; the dq0_l0 accumulate/writeback is wrong")
-    elif r0 > 5e-2:
-        print("VERDICT dqkt-BAD => UB dqkt construction wrong (upstream of the chain)")
+
+    def cols(a):
+        nz = np.abs(a).max(axis=0)
+        return int((nz > 0).sum()), np.round(nz[:20], 3).tolist()
+
+    nz_d, head_d = cols(dqkt_card)
+    nz_g, head_g = cols(gam_card)
+    nz_G, head_G = cols(dq_g)
+    print(f"COLS-dqkt  nz={nz_d}/64 cols[:20]={head_d}  rel_vs_gold={r0:.3e}")
+    print(f"COLS-Gam   nz={nz_g}/64 cols[:20]={head_g}  rel_vs_gold={rg:.3e}")
+    print(f"COLS-DQ    nz={nz_G}/64")  # golden reference only
+    print(f"CHK-DQ     rel={r2:.3e} nonfinite={b2}")
+    if nz_g < 64:
+        print("VERDICT Gam-partial => 2D Parallel exp covers only part of the columns (D9)")
+    elif r2 > 5e-2:
+        print("VERDICT Gam-full but DQ still wrong => L0C->GM realTailN (D13) or GEMM")
     else:
-        print("VERDICT mixed => inspect r1/r0")
-    print(f"CARD dqkt absmax={float(np.abs(dqkt_card).max()):.3e} "
-          f"mean={float(dqkt_card.mean()):.3e} head={np.round(dqkt_card.ravel()[:4], 4).tolist()}")
-    print(f"GOLD dqkt absmax={float(np.abs(dqkt_g).max()):.3e} "
-          f"mean={float(dqkt_g.mean()):.3e} head={np.round(dqkt_g.ravel()[:4], 4).tolist()}")
-    print(f"CARD dq   absmax={float(np.abs(dq_card).max()):.3e} "
-          f"head={np.round(dq_card.ravel()[:4], 4).tolist()}")
-    print(f"GOLD dq   absmax={float(np.abs(dq_g).max()):.3e} "
-          f"head={np.round(dq_g.ravel()[:4], 4).tolist()}")
-    print(f"CHK-dqkt card_vs_gold rel={r1:.3e} nonfinite={b1}")
-    print(f"CHK-DQ   card_vs_gold rel={r2:.3e} nonfinite={b2}")
-    for nm, a, g in (("dqkt", dqkt_card, dqkt_g), ("dq", dq_card, dq_g)):
-        nz = np.abs(a).max(axis=0)          # per-column absmax
-        ng = np.abs(g).max(axis=0)
-        rn = np.abs(a).max(axis=1)          # per-row absmax
-        print(f"COLS-{nm} card_nz_cols={int((nz > 0).sum())}/64 gold_nz_cols={int((ng > 0).sum())}/64 "
-              f"card_cols[:8]={np.round(nz[:8], 3).tolist()} gold_cols[:8]={np.round(ng[:8], 3).tolist()}")
-        print(f"ROWS-{nm} card_nz_rows={int((rn > 0).sum())}/64 "
-              f"card_rows[:4]={np.round(rn[:4], 3).tolist()} card_rows[-4:]={np.round(rn[-4:], 3).tolist()}")
-        print(f"FULL-{nm} card_rows={np.round(rn, 2).tolist()}")
-        print(f"FULLC-{nm} card_cols={np.round(nz, 2).tolist()}")
-        print(f"FULL-{nm}-gold rows={np.round(np.abs(g).max(axis=1), 2).tolist()}")
-    if r1 < 5e-3:
-        print("VERDICT dqkt-OK => GEMM/L1 read path wrong (dqkt is right, DQ is not)")
-    else:
-        print("VERDICT dqkt-BAD => dqkt construction (dP/Gam/M) wrong")
+        print("VERDICT all-good")
     print("S2ADBG-DONE")
 
 

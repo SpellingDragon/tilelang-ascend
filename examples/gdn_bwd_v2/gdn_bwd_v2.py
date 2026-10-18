@@ -872,11 +872,19 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     aux_ub[i, j] = g_ub[i] - g_ub[j]
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
+                if _S2A_DBG:
+                    # debug: Gam (fp32) through the DGAM2 box (dGam's production
+                    # record is only needed for acceptance runs). Its column
+                    # extent tells whether the 2D Parallel exp covers 64 columns.
+                    T.copy(aux_ub, WS_DGAM2[b, h, cc * C, 0])
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = pk2_ub[i, j] * aux_ub[i, j]  # dP .* Gam
                 T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead)
                 for (i, j) in T.Parallel(C, C):
                     da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # d(QKt)
+                if _S2A_DBG:
+                    # debug: the UB dqkt (fp32) through the DKT box.
+                    T.copy(da_ub, WS_DKT[b, h, cc * C, 0])
                 # ---- B4: dQ_hh += d(QKt) K_hh ; dK part_hh = d(QKt)^T Q_hh
                 #      (the B4 dK part reuses the dw half boxes: dW is written
                 #      out to its boundary below first) ----
@@ -884,14 +892,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 T.copy(io_cc, workspace_vcc[cid, :, :])
                 T.copy(workspace_vcc[cid, :, :], da_l1)
                 if _S2A_DBG:
-                    # debug: recompute dqkt@K from the SAME da_l1 into the (single-
-                    # chunk-zero) dKt L0C and dump it. Touches no CV workspace, so
-                    # the cube/vec sync pairing is unchanged. WS_DKT = fresh GEMM
-                    # of the kernel's own A operand; WS_DGAM2 = UB dqkt.
-                    for hh in T.serial(bk_num):
-                        T.copy(K[b, h, cc * C, hh * BK], k_l1)
-                        T.gemm_v0(da_l1, k_l1, dkt0_l0, init=True)
-                        T.copy(dkt0_l0, WS_DKT[b, h, cc * C, hh * BK])
+                    # debug: dqkt (UB) already went to WS_DKT above; keep this
+                    # block as the chain marker only (no extra copies here --
+                    # an extra workspace_vcc read breaks the CV sync pairing).
+                    pass
                 for hh in T.serial(bk_num):
                     T.copy(K[b, h, cc * C, hh * BK], k_l1)
                     T.copy(Q[b, h, cc * C, hh * BK], q_l1)
@@ -917,11 +921,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     else:
                         T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
                         T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                    if _S2A_DBG:
-                        # debug only: da_ub (dqkt) into the DGAM2 box (this run
-                        # does not consume DGAM2; the DKT box now carries da_l1)
-                        T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
-                    else:
+                    if not _S2A_DBG:
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
                 T.copy(dE_ub, WS_DE[b, h, cc * C])
