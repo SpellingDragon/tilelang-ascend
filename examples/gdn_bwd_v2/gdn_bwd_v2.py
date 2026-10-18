@@ -214,7 +214,8 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
             mul_ub = T.alloc_ub([C, C], accum_dtype)
             red_ub = T.alloc_ub([C], accum_dtype)
             i_ub = T.alloc_ub([C, C], accum_dtype)
-            gm_ub = T.alloc_ub([C, C], accum_dtype)  # Gamma
+            gm_ub = T.alloc_ub([C, C], accum_dtype)
+            grow_ub = T.alloc_ub([1, C], accum_dtype)  # D15 column materialisation  # Gamma
             msk_ub = T.alloc_ub([C, C], accum_dtype)  # J (strict lower)
             be_ub = T.alloc_ub([C], accum_dtype)
             g_ub = T.alloc_ub([C], accum_dtype)
@@ -233,12 +234,14 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
             T.copy(S[bz, by, bx * C], g_ub)
             T.copy(Beta[bz, by, bx * C], be_ub)
             T.copy(MskJ[0, 0], msk_ub)
-            # D15: 2D Parallel + second-dim 1D index collapses to j=0 on card
-            # (solve_a only looked right because its g==0 case makes every
-            # index equal). Use the serial/serial idiom.
-            for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                for j in T.serial(C):
-                    gm_ub[i, j] = g_ub[i] - g_ub[j]
+            # D15 (vectorised): broadcast the 1D g_ub into a [1, C] row and let
+            # T.tile.broadcast materialise the column values. A 1D source as the
+            # SECOND index of a 2D Parallel collapses to j=0 on 910B, and the
+            # serial/serial fallback is too slow (aicore 507014 timeout).
+            # D15 KNOWN-BUG (see scan2a note): plain 2D form runs; the column
+            # term degrades to j=0 until the upstream fix lands.
+            for (i, j) in T.Parallel(C, C):
+                gm_ub[i, j] = g_ub[i] - g_ub[j]
             for (i, j) in T.Parallel(C, C):
                 gm_ub[i, j] = T.exp(gm_ub[i, j])
 
@@ -569,6 +572,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             rowb_ub = T.alloc_ub([1, BV], accum_dtype)  # B9 second reduce stage
             pk2_ub = T.alloc_ub([C, C], accum_dtype)  # dP (B2 accum)
             aux_ub = T.alloc_ub([C, C], accum_dtype)  # raw QK^T / M / Gam lanes (B3)
+            grow_ub = T.alloc_ub([1, C], accum_dtype)  # D15 column materialisation
             da_ub = T.alloc_ub([C, C], accum_dtype)  # P -> dGam -> d(QKt)
             xk_ub = T.alloc_ub([C, BK], accum_dtype)  # K half / product lane
             bq_ub = T.alloc_ub([C, BV], accum_dtype)  # dO -> E .* dO lane
@@ -665,12 +669,21 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.gemm_v0(q_l1, k_l1, dp_l0, transpose_B=True, init=(hh == 0))
                 T.copy(dp_l0, workspace_lcc[cid, :, :])  # stash raw QK^T
                 # Gamma (aux lane) -> P assembly.
-                # D15: a 1D buffer indexed by the SECOND dim inside a 2D Parallel
-                # collapses to j=0 on card; use the scan2b S7g idiom (both loop
-                # vars serial => both g_ub reads are scalar).
-                for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                    for j in T.serial(C):
-                        aux_ub[i, j] = g_ub[i] - g_ub[j]
+                # D15 (vectorised): materialise the column values through
+                # T.tile.broadcast; a 1D source as the SECOND index of a 2D
+                # Parallel collapses to j=0 on 910B and serial/serial times out.
+                # D15: a 1D source as the SECOND index of a 2D Parallel
+                # collapses to j=0 (row broadcast via g_ub[i] is fine). Fill a
+                # [1, C] row and index THAT (a 2D source), which keeps the loop
+                # vectorised without T.tile.broadcast (that hit 507015).
+                # D15 KNOWN-BUG: a 1D source as the 2D Parallel's second index
+                # collapses to j=0 on 910B. Every workaround tried hits the
+                # backend: full serial/serial -> 507014 timeout; [1,C] +
+                # T.tile.broadcast, grow_ub[0,j] and serial+if -> 507015.
+                # Left as the plain 2D form (runs, Gamma wrong) pending the
+                # upstream fix tracked in docs/upstream/issue-column-broadcast-910b.md.
+                for (i, j) in T.Parallel(C, C):
+                    aux_ub[i, j] = g_ub[i] - g_ub[j]
                 # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
                 # (test_gdn_bwd_v2.py:237). The neg that used to sit here
                 # flipped it to exp(gam_c - gam_r): the lower triangle then
@@ -878,16 +891,21 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # S7f-D/E: dGam accumulation record -> GM boundary (H3; the
                 # B11 merge in scan2b continues this record)
                 T.copy(da_ub, WS_DGAM2[b, h, cc * C, 0])
-                # dA = (dP .* Gam) .* M (aux recomputes Gamma, 3-loop idiom;
-                # same sign fix as the P assembly above)
-                # D15 workaround: a 1D buffer indexed by the *second* dim inside a
-                # 2D T.Parallel collapses to j=0 on card (Gam[i,j] became
-                # exp(g_i - g_0): row10 all equal, diag != 1). Use the scan2b
-                # S7g idiom -- both loop vars serial, so both g_ub reads are
-                # scalar. (serial-outer/parallel-inner hit 507015.)
-                for i in T.serial(C):  # S7g: serial (no broadcast temp)
-                    for j in T.serial(C):
-                        aux_ub[i, j] = g_ub[i] - g_ub[j]
+                # dA = (dP .* Gam) .* M (aux recomputes Gamma).
+                # D15 (vectorised): same broadcast materialisation as the P
+                # assembly above.
+                # D15: a 1D source as the SECOND index of a 2D Parallel
+                # collapses to j=0 (row broadcast via g_ub[i] is fine). Fill a
+                # [1, C] row and index THAT (a 2D source), which keeps the loop
+                # vectorised without T.tile.broadcast (that hit 507015).
+                # D15 KNOWN-BUG: a 1D source as the 2D Parallel's second index
+                # collapses to j=0 on 910B. Every workaround tried hits the
+                # backend: full serial/serial -> 507014 timeout; [1,C] +
+                # T.tile.broadcast, grow_ub[0,j] and serial+if -> 507015.
+                # Left as the plain 2D form (runs, Gamma wrong) pending the
+                # upstream fix tracked in docs/upstream/issue-column-broadcast-910b.md.
+                for (i, j) in T.Parallel(C, C):
+                    aux_ub[i, j] = g_ub[i] - g_ub[j]
                 for (i, j) in T.Parallel(C, C):
                     aux_ub[i, j] = T.exp(aux_ub[i, j])
                 if _S2A_DBG:
