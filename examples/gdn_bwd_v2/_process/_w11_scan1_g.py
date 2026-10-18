@@ -43,7 +43,7 @@ def run(dtype_str="float16"):
 
     dt = torch.float16 if dtype_str == "float16" else torch.float32
     qn, kn, vn, gn, bn, hn = (_npu(q), _npu(k), _npu(v), _npu(g), _npu(beta), _npu(h0))
-    ws_g = gdn_bwd_v2_cumsum(1, 1, 64, 64)(gn)
+    ws_g, _ws_gam = gdn_bwd_v2_cumsum(1, 1, 64, 64)(gn)  # gam unused here
     msk_j = torch.tril(torch.ones(64, 64, dtype=torch.float32), -1).npu()
     idt = torch.eye(64, dtype=torch.float32).npu()
     ws_a = gdn_bwd_v2_solve_a(1, 1, 64, 64, 64, 64, dtype=dtype_str)(kn, bn, ws_g, msk_j, idt)

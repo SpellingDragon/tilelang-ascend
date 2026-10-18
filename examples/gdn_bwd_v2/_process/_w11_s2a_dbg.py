@@ -63,7 +63,7 @@ def run(dtype_str="float16"):
 
     dt = torch.float16 if dtype_str == "float16" else torch.float32
     qn, kn, vn, gn, bn, hn, don = (_npu(q), _npu(k), _npu(v), _npu(g), _npu(beta), _npu(h0), _npu(do))
-    ws_g = gdn_bwd_v2_cumsum(1, 1, 64, 64)(gn)
+    ws_g, ws_gam = gdn_bwd_v2_cumsum(1, 1, 64, 64)(gn)
     msk_m = torch.tril(torch.ones(64, 64, dtype=torch.float32)).npu()
     msk_j = torch.tril(torch.ones(64, 64, dtype=torch.float32), -1).npu()
     idt = torch.eye(64, dtype=torch.float32).npu()
@@ -71,7 +71,7 @@ def run(dtype_str="float16"):
     ws_a = gdn_bwd_v2_solve_a(1, 1, 64, 64, 64, 64, dtype=dtype_str)(kn, bn, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(1, 1, 64, 64, 64, 64, 64, 64, dtype=dtype_str)(kn, vn, bn, ws_g, ws_a, hn)
     outs = gdn_bwd_v2_scan2a(1, 1, 64, 64, 64, 64, 64, 64, dtype=dtype_str)(
-        qn, kn, vn, don, bn, ws_g, ws_a, msk_m, ones_dv, ws_h)
+        qn, kn, vn, don, bn, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
 
     dqkt_card = outs[4].float().cpu().numpy().reshape(64, 64)   # WS_DKT  <- dqkt

@@ -53,6 +53,7 @@ from tilelang import language as T  # noqa: E402
 from gdn_bwd_v2 import pass_configs  # noqa: E402
 
 _S2A_DBG = False  # cut probe: debug dumps off
+_S2A_DW_DBG = False  # cut probe: second debug switch off too
 
 
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
@@ -86,16 +87,20 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
         WS_DGAM2: T.Tensor([B, H, L, C], "float"),  # type: ignore  boundary out (S7f-E/D record)
         WS_DGAM: T.Tensor([B, H, L], "float"),  # type: ignore  boundary out (S7f-E)
         WS_DK: T.Tensor([B, H, L, DK], "float"),  # type: ignore  boundary out (S7f-E)
-        workspace_ldk: T.Tensor([B * H, C, DK], accum_dtype),  # type: ignore  workspace
+        workspace_ldk: T.Tensor([B * H, bk_num, C, BK], accum_dtype),  # type: ignore  half blocks
         workspace_lcc: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  workspace
         workspace_lcb: T.Tensor([B * H, C, BV], accum_dtype),  # type: ignore  workspace
-        workspace_lbd: T.Tensor([B * H, BV, DK], accum_dtype),  # type: ignore  workspace (dH half dump)
+        workspace_lbd: T.Tensor([B * H, bk_num, BV, BK], accum_dtype),  # type: ignore  workspace (dH half dump)
         workspace_lc16: T.Tensor([B * H, C, 16], accum_dtype),  # type: ignore  workspace
         workspace_vdk: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (Kt halves)
         workspace_w: T.Tensor([B * H, C, DK], dtype),  # type: ignore  workspace (-W halves)
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
         WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
+        # dQ staging MUST stay in workspace_idx: the cv-sync pass only builds
+        # cross-core set/wait flags for workspace_idx tensors. As plain inputs
+        # these boxes got no flag, the AIV read them before the AIC wrote them
+        # and DQ came out all zeros (w11 diag; see notes [45]).
         workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
         workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
     ):
@@ -131,8 +136,6 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
             dh1_l0 = T.alloc_L0C([BV, BK], accum_dtype)
             dw0_l0 = T.alloc_L0C([C, BK], accum_dtype)  # dW half accum (B6 -> B4 dK part)
             dw1_l0 = T.alloc_L0C([C, BK], accum_dtype)
-            dkt0_l0 = T.alloc_L0C([C, BK], accum_dtype)  # dKt half accum (B9)
-            dkt1_l0 = T.alloc_L0C([C, BK], accum_dtype)
 
             # ---- UB (Vector, fp32 accumulation) ----
             g_ub = T.alloc_ub([C], accum_dtype)  # gam
@@ -222,8 +225,8 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     T.copy(io_xk, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bek_l1)
                     T.gemm_v0(a_l1, bek_l1, dw0_l0, init=True)  # W half (temp)
-                    T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                    T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                    T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                    T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                     for (i, j) in T.Parallel(C, BK):
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # -W half
                     T.copy(xk_ub, io_xk)
@@ -275,6 +278,11 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     for (i, j) in T.Parallel(C, C):
                         da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # P
                     T.copy(da_ub, io_cc)
+                    if _S2A_DW_DBG:
+                        # debug: the fp16 P (cast back to fp32). inf here means the
+                        # upper triangle was not zeroed before the cast.
+                        T.copy(io_cc, aux_ub)
+                        T.copy(aux_ub, WS_DKT[b, h, cc * C, 0])
                     T.copy(io_cc, workspace_vcc[cid, :, :])
                     T.copy(workspace_vcc[cid, :, :], p_l1)
                     # ---- 1D accumulators ----
@@ -314,7 +322,12 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                             T.copy(WS_H[b, h, cc, bv * BV, hh * BK], io_hv)
                             T.copy(io_hv, x_ub)  # H_in half
                             T.tile.fill(dhp_ub, 0.0)
-                            T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half (fp32 GM)
+                            if cc != chunk_num - 1:
+                                # Delta' is zero for the deepest chunk; WS_D is not
+                                # initialised by the runtime (auto workspace), so
+                                # reading it there would inject GM garbage into
+                                # dVnew / dgam / dW.
+                                T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half (fp32 GM)
                             for (i, j) in T.Parallel(BV, BK):
                                 x_ub[i, j] = x_ub[i, j] * dhp_ub[i, j]
                             T.reduce_sum(x_ub, redh_ub, dim=1)
@@ -418,14 +431,15 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                         # 1 column wide on card).
                         for hh in range(bk_num):
                             T.tile.fill(dhp_ub, 0.0)
-                            T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
+                            if cc != chunk_num - 1:
+                                T.copy(WS_D[b, h, bv * BV, hh * BK], dhp_ub)  # Delta' half reload
                             T.tile.fill(x_ub, 0.0)
                             if hh == 0:
-                                T.copy(dh0_l0, workspace_lbd[cid, :, hh * BK])
-                                T.copy(workspace_lbd[cid, :, hh * BK], x_ub)
+                                T.copy(dh0_l0, workspace_lbd[cid, hh, :, :])
+                                T.copy(workspace_lbd[cid, hh, :, :], x_ub)
                             else:
-                                T.copy(dh1_l0, workspace_lbd[cid, :, hh * BK])
-                                T.copy(workspace_lbd[cid, :, hh * BK], x_ub)
+                                T.copy(dh1_l0, workspace_lbd[cid, hh, :, :])
+                                T.copy(workspace_lbd[cid, hh, :, :], x_ub)
                             for (i, j) in T.Parallel(BV, BK):
                                 x_ub[i, j] = x_ub[i, j] + dhp_ub[i, j] * glast_ub[0]
                             # S7f: WS_D is fp32 GM -- fp32 ub direct copy (:750 form)
@@ -440,11 +454,11 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     for hh in range(bk_num):
                         # D13: range-unrolled so realTailN stays 64 (see B15 note)
                         if hh == 0:
-                            T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                            T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                            T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                         else:
-                            T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                            T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
+                            T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                         for (i, j) in T.Parallel(C, BK):
                             xk_ub[i, j] = 0.0 - xk_ub[i, j]  # dW = -sum dVnew H_in
                         T.copy(xk_ub, io_xk)
@@ -475,7 +489,7 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                     T.copy(MskM[0, 0], aux_ub)  # M reload (Gam dead; baseline lane)
                     for (i, j) in T.Parallel(C, C):
                         da_ub[i, j] = da_ub[i, j] * aux_ub[i, j]  # d(QKt)
-                    if _S2A_DBG:
+                    if _S2A_DBG and not _S2A_DW_DBG:
                         # debug: the UB dqkt (fp32) through the DKT box.
                         T.copy(da_ub, WS_DKT[b, h, cc * C, 0])
                     # ---- B4: dQ_hh += d(QKt) K_hh ; dK part_hh = d(QKt)^T Q_hh
@@ -500,25 +514,25 @@ def scan2a_cut(B, H, L, DK, DV, C, BV, BK, cut, dtype="float16", accum_dtype="fl
                             T.copy(dq1_l0, workspace_dq1[cid, :, :])
                             T.copy(workspace_dq1[cid, :, :], t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw0_l0, transpose_A=True, init=True)
-                            T.copy(dw0_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                            T.copy(dw0_l0, workspace_ldk[cid, hh, :, :])
+                            T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                         else:
                             T.gemm_v0(da_l1, k_l1, dq1_l0, init=False)
                             T.copy(dq1_l0, workspace_dq1[cid, :, :])
                             T.copy(workspace_dq1[cid, :, :], t1_ub)
                             T.gemm_v0(da_l1, q_l1, dw1_l0, transpose_A=True, init=True)
-                            T.copy(dw1_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
+                            T.copy(dw1_l0, workspace_ldk[cid, hh, :, :])
+                            T.copy(workspace_ldk[cid, hh, :, :], xk_ub)
                         T.copy(xk_ub, WS_DK[b, h, cc * C, hh * BK])  # fp32 boundary
                     # ---- dW boundary (sign fold, S7e :789-790) + dKt boundary ----
                     for hh in T.serial(bk_num):
-                        if hh == 0:
-                            T.copy(dkt0_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                        else:
-                            T.copy(dkt1_l0, workspace_ldk[cid, :, hh * BK])
-                            T.copy(workspace_ldk[cid, :, hh * BK], xk_ub)
-                        if not _S2A_DBG:
+                        # dKt = vnew @ Delta'^T is not implemented (no GEMM feeds
+                        # dkt0/1_l0), so the L0C lane holds uninitialised garbage.
+                        # Delta' is zero on the deepest chunk and the term is still
+                        # missing elsewhere -> emit zeros (matches the single-chunk
+                        # golden; multi-chunk dKt stays a known gap).
+                        T.tile.fill(xk_ub, 0.0)
+                        if not _S2A_DBG and not _S2A_DW_DBG:
                             T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                     # ---- dE / dgam scalar boundaries + DQ write-back ----
                     if not _S2A_DBG:

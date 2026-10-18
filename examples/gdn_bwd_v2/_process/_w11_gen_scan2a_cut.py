@@ -102,6 +102,7 @@ from tilelang import language as T  # noqa: E402
 from gdn_bwd_v2 import pass_configs  # noqa: E402
 
 _S2A_DBG = False  # cut probe: debug dumps off
+_S2A_DW_DBG = False  # cut probe: second debug switch off too
 
 
 ''' + fn_text + """
@@ -130,7 +131,7 @@ if __name__ == "__main__":
     ones_dv = torch.ones(DV, 16, dtype=dt, device="npu")
 
     try:
-        ws_g = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
+        ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
         ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype="float16")(
             k, beta, ws_g, msk_j, idt)
         ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, BV, BK, dtype="float16")(
@@ -142,7 +143,7 @@ if __name__ == "__main__":
 
     try:
         ker = scan2a_cut(B, H, T_len, DK, DV, C, BV, BK, cut, dtype="float16")
-        out = ker(q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h)
+        out = ker(q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
         torch.npu.synchronize()
         print(f"S2ACUT-{cut}-PASS")
     except Exception as e:  # noqa: BLE001

@@ -83,13 +83,16 @@ from tilelang import language as T
 
 # Debug switch (compile-time constant; default off => production bytecode
 # unchanged). With GDN_S2A_DBG=1, scan2a emits dqkt (da_ub) through the
-# WS_DKT box instead of dKt, so one on-card run tells "dqkt construction
-# wrong" (dqkt != golden) from "GEMM/L1 path wrong" (dqkt == golden but
-# DQ != golden dqkt@K). Only meaningful for single-chunk runs, where the
-# DKT box is zero anyway; never set for acceptance runs.
+# WS_DKT box, so one on-card run tells "dqkt construction wrong"
+# (dqkt != golden) from "GEMM/L1 path wrong" (dqkt == golden but
+# DQ != golden dqkt@K). The DKT box is always zero in production now (the
+# dKt term is unimplemented), and this dump and the dKt zero-write are
+# mutually exclusive. Never set for acceptance runs.
 _S2A_DBG = os.environ.get("GDN_S2A_DBG", "0") == "1"
-# dedicated switch: dump the fp32 dW lane into the DKT box (takes
-# priority over the dqkt dump, which writes the same box).
+# Second debug switch (compile-time constant; default off). With
+# GDN_S2A_DW_DBG=1, scan2a dumps the fp16 P (io_cc, cast back to fp32) through
+# the DKT box and the dKt zero-write + dqkt dump both yield, so the box has a
+# single writer in that mode.
 _S2A_DW_DBG = os.environ.get("GDN_S2A_DW_DBG", "0") == "1"
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
@@ -539,6 +542,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         workspace_vcc: T.Tensor([B * H, C, C], dtype),  # type: ignore  workspace
         workspace_vcb: T.Tensor([B * H, C, BV], dtype),  # type: ignore  workspace
         WS_GAM: T.Tensor([B, H, chunk_num, C, C], "float"),  # type: ignore  D15 plan-10c
+        # dQ staging MUST stay in workspace_idx: the cv-sync pass only builds
+        # cross-core set/wait flags for workspace_idx tensors. As plain inputs
+        # these boxes got no flag, the AIV read them before the AIC wrote them
+        # and DQ came out all zeros (w11 diag; see notes [45]).
         workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
         workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
     ):
@@ -574,8 +581,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             dh1_l0 = T.alloc_L0C([BV, BK], accum_dtype)
             dw0_l0 = T.alloc_L0C([C, BK], accum_dtype)  # dW half accum (B6 -> B4 dK part)
             dw1_l0 = T.alloc_L0C([C, BK], accum_dtype)
-            dkt0_l0 = T.alloc_L0C([C, BK], accum_dtype)  # dKt half accum (B9)
-            dkt1_l0 = T.alloc_L0C([C, BK], accum_dtype)
 
             # ---- UB (Vector, fp32 accumulation) ----
             g_ub = T.alloc_ub([C], accum_dtype)  # gam
