@@ -38,7 +38,12 @@ from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd, _golden_item  # noqa: E
 TOL = 1e-9
 
 
-def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None):
+def _q16(x):
+    """把 fp64 量按卡上的方式过一遍 fp16（模拟 GM 中转的舍入）。"""
+    return np.asarray(np.asarray(x, np.float64).astype(np.float16), np.float64)
+
+
+def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None, quantize=False):
     """按 gdn_bwd_v3_relay 的顺序复刻全序列反向，返回六梯度（fp64）。
 
     dump 非 None 时，把每 chunk 的中间量 abs.max 填进 dict（用于与卡上对表）。
@@ -64,11 +69,19 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None):
         gam2, kk, msk_m, msk_j = ca["gam_2d"], ca["kk"], ca["msk_m"], ca["msk_j"]
         a_mat, e_vec, th, glast = ca["a_mat"], ca["e_vec"], ca["th"], ca["glast"]
         vnew, hin, kt = ca["vnew"], ca["hin"], ca["kt"]
+        if quantize:
+            # 只量化"卡上确实是 fp16 GM"的量；gam2 / e_vec / th 在卡上是 fp32
+            kk = _q16(kk)
+            a_mat = _q16(a_mat)
+            vnew, hin, kt = _q16(vnew), _q16(hin), _q16(kt)
+            delta_next = _q16(delta_next)
         bv = ca["beta"][:, None] * Vn[sl]
         bek = (ca["beta"] * e_vec)[:, None] * Kn[sl]
 
         # B1
-        dvnew = ca["p_mat"].T @ DOn[sl] + kt @ delta_next.T
+        p_mat = _q16(ca["p_mat"]) if quantize else ca["p_mat"]
+        w_mat = _q16(ca["w_mat"]) if quantize else ca["w_mat"]
+        dvnew = p_mat.T @ DOn[sl] + kt @ delta_next.T
         # B2/B3/B4
         dpk = DOn[sl] @ vnew.T
         dqkt = dpk * gam2 * msk_m
@@ -117,7 +130,7 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None):
         dg[sl] = np.cumsum(dgam[::-1])[::-1] + carry
         carry += dgam.sum()
         # B15: 传给更早的 chunk
-        delta_next = (e_vec[:, None] * DOn[sl]).T @ Qn[sl] - dvnew.T @ ca["w_mat"] + glast * delta_next
+        delta_next = (e_vec[:, None] * DOn[sl]).T @ Qn[sl] - dvnew.T @ w_mat + glast * delta_next
 
     ref = {name: np.asarray(_golden_item(gold, name, 0), np.float64)[0, 0]
            for name in ("dq", "dk", "dv", "dbeta", "dg")}
@@ -131,6 +144,11 @@ def _rel(a, b):
 
 
 def main():
+    if "--fp16" in sys.argv:
+        got, ref = relay_reference(quantize=True)
+        for name in ("dq", "dk", "dv", "dbeta", "dg", "dh0"):
+            print(f"HOSTV3-FP16 {name:6s} rel={_rel(got[name], ref[name]):.3e}")
+        return 0
     if "--dump" in sys.argv:
         import json
         d: dict = {}
