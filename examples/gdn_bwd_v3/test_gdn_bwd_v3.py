@@ -58,14 +58,15 @@ def run_relay(B, H, T_len, DK, DV, C):
     torch.manual_seed(7)
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
     dev, dt = "npu", torch.float16
-    dq, dk, dv, dh0 = gdn_bwd_v3_relay(
+    dq, dk, dv, dbeta, dh0 = gdn_bwd_v3_relay(
         q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
         beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C)
     torch.npu.synchronize()
     ok = True
-    for item, val in (("dq", dq), ("dk", dk), ("dv", dv)):
+    for item, val in (("dq", dq), ("dk", dk), ("dv", dv), ("dbeta", dbeta)):
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
         passed, ratio, max_abs = check_precision(val.cpu().float(), ref, "float16")
+
         print(f"RELAY {item} rel={max_abs:.3e} verdict={'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
         ok &= passed
     ref0 = np.concatenate([_golden_item(gold, "dh0", b) for b in range(B)], axis=0)

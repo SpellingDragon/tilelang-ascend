@@ -585,11 +585,19 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
     k_ta_dvn = gdn_v3_ta(B, H, C, DV, DK)  # dvnew^T W  /  e_do^T Q
     k_tb_kt = gdn_v3_tb(B, H, C, DV, DK)   # Kt Delta'^T
-    k_mm = gdn_v3_mm(B, H, C, DV, DK)      # vnew @ Delta'
+    k_mm = gdn_v3_mm(B, H, C, DV, DK)      # vnew @ Delta'  /  dvnew @ H_in
+    k_ta_cdk = gdn_v3_ta(B, H, C, C, DK)   # A^T dw
+    k_mul = gdn_v3_mul(B, H, C, DK)
+    k_mulv = gdn_v3_mul(B, H, C, DV)
+    k_rows_k = gdn_v3_rowsum(B, H, C, DK)
+    k_rows_v = gdn_v3_rowsum(B, H, C, DV)
+    ones_k = torch.ones(DK, 16, dtype=dt, device=dev)
+    ones_v = torch.ones(DV, 16, dtype=dt, device=dev)
 
     dq = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
     dk = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
     dv = torch.empty(B, H, T_len, DV, dtype=dt, device=dev)
+    dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     cache = []
 
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
@@ -610,7 +618,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dP = k_dp(DOc, vnew); _step("dp")
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
-        cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
+        cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, vnew=vnew, wm=wm, P=_P, dqkt=dqkt, edo=edo,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
@@ -641,10 +649,20 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
             dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
         else:
             dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"])
-        # dv = beta .* (A^T dvnew)
-        dv[:, :, sl, :] = k_scale(k_ta(d["Ac"], dvnew), d["Betac"])
+        # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
+        t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
+        dv[:, :, sl, :] = k_scale(t1, d["Betac"])
+        # B6/B8: dw = -dvnew H_in ; t2 = A^T dw = -A^T(dvnew H_in)
+        dw = k_mm(dvnew, d["Hc"])                       # [B,H,C,DK]
+        t2n = k_ta_cdk(d["Ac"], dw)                     # A^T dw（含负号）
+        neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
+        dk[:, :, sl, :] = dk[:, :, sl, :] + k_scale(t2n, neg_be)
+        # dbeta = rowsum(V .* t1) + E .* rowsum(K .* t2)
+        r1 = k_rows_v(k_mulv(d["Vc"], t1), ones_v)[..., 0]
+        r2 = k_rows_k(k_mul(d["Kc"], t2n), ones_k)[..., 0]
+        dbeta[:, :, sl] = r1 - d["Ec"] * r2
         d["delta_next"] = delta
         if c == 0:
             dh0 = delta
     torch.npu.synchronize()
-    return dq, dk, dv, dh0
+    return dq, dk, dv, dbeta, dh0
