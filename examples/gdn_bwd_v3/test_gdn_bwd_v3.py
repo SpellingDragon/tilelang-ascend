@@ -43,12 +43,6 @@ def run_case(B, H, T_len, DK, DV, C, check_dkdv):
     dq, dk, dv = gdn_bwd_v3(
         q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
         beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C)
-    dq, dk, dv, dbeta, dg, dh0 = _out[:6]
-    if len(_out) == 7:      # GDN_V3_DK_SPLIT=1：把四项各自与 golden 比
-        for k, v_part in _out[6].items():
-            ref = np.concatenate([_golden_item(gold, "dk", b) for b in range(B)], axis=0)
-            _p, ratio, max_abs = check_precision(v_part.cpu().float(), ref, "float16")
-            print(f"DKPART {k} rel={max_abs:.3e} ratio={ratio:.4f}")
     torch.npu.synchronize()
 
     got = {"dq": dq.cpu().float(), "dk": dk.cpu().float(), "dv": dv.cpu().float()}
