@@ -1008,7 +1008,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # missing elsewhere -> emit zeros (matches the single-chunk
                     # golden; multi-chunk dKt stays a known gap).
                     T.tile.fill(xk_ub, 0.0)
-                    if not _S2A_DBG and not _S2A_DW_DBG:
+                    if not _S2A_DBG and not _S2A_DW_DBG and not _S2A_VN_DBG:
+                        # every debug writer of WS_DKT must yield, or the dKt
+                        # zero-write overwrites the probe (second time this
+                        # bit us: D16's dump, now the Vnew probe).
                         T.copy(xk_ub, WS_DKT[b, h, cc * C, hh * BK])  # fp32 boundary
                 # ---- dE / dgam scalar boundaries + DQ write-back ----
                 if not _S2A_DBG:
