@@ -671,6 +671,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dv = torch.empty(B, H, T_len, DV, dtype=dt, device=dev)
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
+    # GDN_V3_DK_SPLIT=1 时额外产出 dk 的四项单独结果，用于一次车定位是哪一项错
+    _split = os.environ.get("GDN_V3_DK_SPLIT") == "1"
+    dk_parts = {k: torch.zeros(B, H, T_len, DK, dtype=dt, device=dev)
+                for k in ("q1", "q2", "q3", "q4")} if _split else None
     carry = torch.zeros(B, H, dtype=torch.float32, device=dev)
     m_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
     k_suffix = gdn_v3_suffix(B, H, C)
@@ -774,6 +778,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         _q4 = k_ab_cc(dxs, d["Kc"])
         print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
         dk[:, :, sl, :] = _dk_acc + _q4        # 一次写，避免三轮读-改-写
+        if dk_parts is not None:
+            dk_parts["q1"][:, :, sl, :] = _dk1
+            dk_parts["q2"][:, :, sl, :] = _q2
+            dk_parts["q3"][:, :, sl, :] = _q3
+            dk_parts["q4"][:, :, sl, :] = _q4
         kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
         r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
         print(f"RELAYDBG c={c} |r3|={r3.abs().max():.3e}", flush=True)
@@ -805,4 +814,6 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if c == 0:
             dh0 = delta
     torch.npu.synchronize()
+    if dk_parts is not None:
+        return dq, dk, dv, dbeta, dg, dh0, dk_parts
     return dq, dk, dv, dbeta, dg, dh0
