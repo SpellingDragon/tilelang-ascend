@@ -27,15 +27,15 @@ _pass = {
 
 
 @tilelang.jit(out_idx=[3], pass_configs=_pass)
-def v3_vnew(B, H, NC, C, DV, DK, dtype="float16", accum="float"):
-    """NC = chunk_num; inputs are per-chunk U0 [B,H,NC,C,DV] and W [B,H,NC,C,DK]."""
+def v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
+    """One launch per chunk (D23: init=True only clears on a kernel's first pass)."""
 
     @T.prim_func
     def main(
-        U0: T.Tensor([B, H, NC, C, DV], dtype),   # type: ignore
-        Wm: T.Tensor([B, H, NC, C, DK], dtype),   # type: ignore
-        Hh: T.Tensor([B, H, NC, DV, DK], dtype),  # type: ignore  H_in per chunk
-        VN: T.Tensor([B, H, NC, C, DV], dtype),   # type: ignore
+        U0: T.Tensor([B, H, C, DV], dtype),   # type: ignore
+        Wm: T.Tensor([B, H, C, DK], dtype),   # type: ignore
+        Hh: T.Tensor([B, H, DV, DK], dtype),  # type: ignore  H_in of this chunk
+        VN: T.Tensor([B, H, C, DV], dtype),   # type: ignore
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -51,21 +51,18 @@ def v3_vnew(B, H, NC, C, DV, DK, dtype="float16", accum="float"):
             # python range: every c is a compile-time constant, so the
             # per-chunk loads cannot be hoisted out of the loop (cc=3 alone was
             # exact with T.serial, notes [80]).
-            for c in range(NC):
-                T.copy(Wm[b, h, c, 0, 0], w_l1)
-                T.copy(Hh[b, h, c, 0, 0], hin_l1)
-                T.copy(U0[b, h, c, 0, 0], u0_16)
+            if True:
+                T.copy(Wm[b, h, 0, 0], w_l1)
+                T.copy(Hh[b, h, 0, 0], hin_l1)
+                T.copy(U0[b, h, 0, 0], u0_16)
                 T.copy(u0_16, u0_32)
                 # W @ H^T in L0C, then Vnew = U0 - that, on the vector side.
-                # D23: init=True does not clear L0C on every iteration, so fill
-                # it explicitly first.
-                T.tile.fill(vn_l0, 0.0)
                 T.gemm_v0(w_l1, hin_l1, vn_l0, transpose_B=True, init=True)
                 T.copy(vn_l0, wh_ub)
                 for i, j in T.Parallel(C, DV):
                     wh_ub[i, j] = u0_32[i, j] - wh_ub[i, j]
                 T.copy(wh_ub, io_ub)
-                T.copy(io_ub, VN[b, h, c, 0, 0])
+                T.copy(io_ub, VN[b, h, 0, 0])
 
     return main
 
@@ -96,8 +93,12 @@ def main():
     if _zerow:
         t_w = torch.zeros_like(t_w)
         print("V3V-ZEROW control: W forced to zero, Vnew must equal U0")
-    got = v3_vnew(B, H, NC, C, DV, DK)(t_u0, t_w, t_h).float().cpu().numpy()[0, 0]
+    ker = v3_vnew(B, H, C, DV, DK)
+    outs = []
+    for c in range(NC):                      # D23: one launch per chunk
+        outs.append(ker(t_u0[:, :, c], t_w[:, :, c], t_h[:, :, c]).float().cpu().numpy()[0, 0])
     torch.npu.synchronize()
+    got = np.stack(outs)
 
     refs = [np.asarray(cache[c]["vnew"], np.float64) for c in range(NC)]
     ok = True
