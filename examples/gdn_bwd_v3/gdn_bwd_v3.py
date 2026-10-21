@@ -703,7 +703,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
-        wm_n = k_ab_k(Ac, k_scale(Kc, -Betac * Ec))
+        bek_n = k_scale(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它
+        wm_n = k_ab_k(Ac, bek_n)              # -W
         vnew = k_vnew(Ac, bv, wm_n, Hc)
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
@@ -711,7 +712,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
-                          Betac=Betac, vnew=vnew, wm_n=wm_n, bv=bv, bek_n=wm_n, Gamc=Gamc,
+                          Betac=Betac, vnew=vnew, wm_n=wm_n, bv=bv, bek_n=bek_n, Gamc=Gamc,
                           P=_P, dqkt=dqkt, edo=edo, dP=dP, raw=raw,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
