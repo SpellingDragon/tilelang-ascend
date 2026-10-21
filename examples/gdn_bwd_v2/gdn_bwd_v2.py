@@ -695,8 +695,8 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_xk, workspace_w[cid, :, hh * BK])
                     # S7g: single read-back keeps every half alive in L1 for the
                     # two later GEMM consumers (workspace_w stays strict 1W1R)
-                    T.copy(workspace_w[cid, :, hh * BK], w_full_l1[hh, :, :])
-                    T.copy(workspace_w[cid, :, hh * BK], w_a_l1[hh])
+                    T.copy(workspace_w[cid, 0, hh * BK], w_full_l1[hh, :, :])  # #1198: no ':' before a scalar offset
+                    T.copy(workspace_w[cid, 0, hh * BK], w_a_l1[hh])  # #1198 form
                 # ---- raw QK^T -> workspace_lcc stash (B3 read-before-clobber)
                 #      P = (raw .* Gam) .* M -> p_l1 (S7e :640-646 order) ----
                 for hh in T.serial(bk_num):
@@ -802,7 +802,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         T.copy(dhp_ub, io_hv)
                         T.copy(io_hv, workspace_vcc[cid, :, :])
                         T.copy(workspace_vcc[cid, :, :], dhp_l1)
-                        T.copy(workspace_vdk[cid, :, hh * BK], kt_l1)
+                        T.copy(workspace_vdk[cid, 0, hh * BK], kt_l1)  # #1198 form
                         T.gemm_v0(kt_l1, dhp_l1, dvnew_l0, transpose_B=True, init=False)
                     # B9 scalar: dgam_{n-1} += exp(gam_{n-1}) <H_in, Delta'>
                     for j in T.Parallel(BV):
