@@ -6,6 +6,7 @@
 #   2) 两条 L1 各司其职：w_l1 只作 A（转置 B 的 GEMM），hin_l1 只作 B
 #   3) L0C 先 `init=True` 装 U0、再 `init=False` 累加 W·H^T，最后一次性出 GM
 # 判读：VNEW3 的逐 chunk rel < 5e-3 ⇒ v3 骨架成立，可继续挂 vector 段（βV/βEK）。
+import os
 import sys
 
 sys.path.insert(0, "/tmp")
@@ -88,6 +89,10 @@ def main():
     t_w = torch.from_numpy(wm.astype(np.float16))[None, None].to("npu")
     t_h = torch.from_numpy(hin.astype(np.float16))[None, None].to("npu")
 
+    _zerow = os.environ.get("V3V_ZEROW") == "1"
+    if _zerow:
+        t_w = torch.zeros_like(t_w)
+        print("V3V-ZEROW control: W forced to zero, Vnew must equal U0")
     got = v3_vnew(B, H, NC, C, DV, DK)(t_u0, t_w, t_h).float().cpu().numpy()[0, 0]
     torch.npu.synchronize()
 
