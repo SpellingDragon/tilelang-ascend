@@ -98,25 +98,14 @@ def run_relay(B, H, T_len, DK, DV, C):
 
 
 def main():
-    ok = True
-    if lvl in ("l0", "all"):
-        # L0：单 chunk。六项全部已在 rel<5e-3 内（见 notes [102]）。
-        ok &= run_case(1, 1, 64, 64, 64, 64, check_dkdv=True)
-        ok &= run_relay(1, 1, 64, 64, 64, 64)
-    if lvl in ("l1", "all"):
-        # L1：多 chunk（T=256）。已知欠账：dk/dbeta 超 5e-3，来自 v2 前置 scan1 的
-        # fp16 递推（notes [105]）；这里如实记录，不作为 gate。
-        print("=== L1 (multi-chunk, 已知欠账：dk/dbeta) ===", flush=True)
-        run_case(1, 1, 256, 64, 64, 64, check_dkdv=False)
-        _ok_l1 = run_relay(1, 1, 256, 64, 64, 64)
-        print(f"L1-VERDICT {'PASS' if _ok_l1 else 'WARN'}", flush=True)
-    if lvl in ("l2", "all"):
-        # L2：非 2 幂的序列长度，验证尾块路径
-        print("=== L2 (non-power-of-two T) ===", flush=True)
-        run_relay(1, 1, 192, 64, 64, 64)
-    if lvl == "l2" or lvl == "boundary":
-        print("Boundary cases live in p2-13 test-design (not yet filled)", flush=True)
-    print("V3-LEVEL %s final=%s" % (lvl, "PASS" if ok else "FAIL"), flush=True)
+    # 单 chunk：dq/dk/dv 都可对 golden（Delta' 恒为 0）
+    ok = run_case(1, 1, 64, 64, 64, 64, check_dkdv=True)
+    # 多 chunk：只有 dq 不含跨 chunk 项，dk/dv 待补 dKt 后再纳入
+    ok &= run_case(1, 1, 256, 64, 64, 64, check_dkdv=False)
+    # relay：无条件跑（它才是 dk/dv/dbeta 的 gate）
+    # 单 chunk 先跑：它没有 scan1 的 128 步递推，用来分离"前置累积"与"本层精度"
+    ok &= run_relay(1, 1, 64, 64, 64, 64)
+    ok &= run_relay(1, 1, 256, 64, 64, 64)
     return 0 if ok else 1
 
 
