@@ -91,18 +91,19 @@ def main():
                   * np.asarray(ca["msk_m"], np.float64)).astype(np.float16)
         dk_ref = np.asarray(ca["p_mat"], np.float64)  # unused, keeps flake quiet
         dk_ref = dqkt_g.astype(np.float64).T @ Qn[sl]
+        # The probes compute ONE term each (B4' and B7 respectively), while the
+        # golden dk/dv also carry the cross-chunk and th-scaled terms. Compare
+        # against the same single term computed in numpy.
         out_dk = kdk(f16(dqkt_g), f16(Qn[sl])).float().cpu().numpy()[0, 0].astype(np.float64)
-        rel_dk = float(np.abs(out_dk - dk_g[sl]).max() / (np.abs(dk_g[sl]).max() + 1e-30))
+        rel_dk = float(np.abs(out_dk - dk_ref).max() / (np.abs(dk_ref).max() + 1e-30))
 
         t = kdv(f16(np.asarray(ca["a_mat"])), f16(np.asarray(ca["vnew"]))).float().cpu().numpy()[0, 0].astype(np.float64)
+        dv_ref = Bn[sl][:, None] * (np.asarray(ca["a_mat"], np.float64).T @ np.asarray(ca["vnew"], np.float64))
         out_dv = Bn[sl][:, None] * t
-        rel_dv = float(np.abs(out_dv - dv_g[sl]).max() / (np.abs(dv_g[sl]).max() + 1e-30))
+        rel_dv = float(np.abs(out_dv - dv_ref).max() / (np.abs(dv_ref).max() + 1e-30))
         print(f"DKDV cc={c} rel_dk={rel_dk:.3e} rel_dv={rel_dv:.3e} "
-              f"dkmax={float(np.abs(dk_g[sl]).max()):.3e} dvmax={float(np.abs(dv_g[sl]).max()):.3e}")
-        # dk's golden carries the cross-chunk Kt^T Delta' term, which this probe
-        # does not model -- only the last chunk has Delta' = 0.
-        if c == NC - 1:
-            ok &= (rel_dk < 5e-3)
+              f"dkmax={float(np.abs(dk_ref).max()):.3e} dvmax={float(np.abs(dv_ref).max()):.3e}")
+        ok &= (rel_dk < 5e-3)
         ok &= (rel_dv < 5e-3)
     print("DKDV verdict=%s" % ("PASS" if ok else "FAIL"))
     print("DKDV-DONE")
