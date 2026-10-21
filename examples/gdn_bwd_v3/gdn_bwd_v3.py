@@ -673,6 +673,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     # GDN_V3_DK_SPLIT=1 时额外产出 dk 的四项单独结果，用于一次车定位是哪一项错
     _split = os.environ.get("GDN_V3_DK_SPLIT", "1") == "1"   # 环境变量两次未生效，先默认开
+    # dk 的写入方式：默认"逐 chunk 切片写"；GDN_V3_ONESHOT_WRITE=1 时先收集再 cat，
+    # 用来排除"循环内多次 dk[:,:,sl,:]= 的路径问题"（多占一份 [B,H,T,DK] 内存）
+    _oneshot = os.environ.get("GDN_V3_ONESHOT_WRITE", "0") == "1"
+    dk_buf = [] if _oneshot else None
     dk_parts = {k: torch.zeros(B, H, T_len, DK, dtype=dt, device=dev)
                 for k in ("q1", "q2", "q3", "q4")} if _split else None
     carry = torch.zeros(B, H, dtype=torch.float32, device=dev)
@@ -777,7 +781,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dxs = (dx + dx.transpose(-1, -2)).to(dt)
         _q4 = k_ab_cc(dxs, d["Kc"])
         print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
-        dk[:, :, sl, :] = _dk_acc + _q4        # 一次写，避免三轮读-改-写
+        _dk_full = _dk_acc + _q4
+        if _oneshot:
+            dk_buf.append(_dk_full)             # 收集，循环后一次 cat 写回
+        else:
+            dk[:, :, sl, :] = _dk_full          # 逐 chunk 切片写
         if dk_parts is not None:
             dk_parts["q1"][:, :, sl, :] = _dk1
             dk_parts["q2"][:, :, sl, :] = _q2
@@ -813,6 +821,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         d["delta_next"] = delta
         if c == 0:
             dh0 = delta
+    if _oneshot:
+        dk = torch.cat(dk_buf, dim=2)          # [B,H,T,DK]，一次 aclnn
     torch.npu.synchronize()
     if dk_parts is not None:
         return dq, dk, dv, dbeta, dg, dh0, dk_parts
