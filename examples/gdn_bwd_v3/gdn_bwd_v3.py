@@ -400,6 +400,28 @@ def gdn_v3_ta(B, H, C, M, N, dtype="float16", accum="float"):
 
 
 @tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_ta32(B, H, C, M, N, dtype="float16", accum="float"):
+    """O = A^T B，**fp32 输出**：Δ' 的两个分量（e_do^T Q、dvnew^T(-W)）用它算，
+    print 存到 fp16 GM 会先把 Δ' 的精度压到 5e-4（[109] 的下一层）。"""
+
+    @T.prim_func
+    def main(A: T.Tensor([B, H, C, M], dtype), Bm: T.Tensor([B, H, C, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, M, N], accum)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            a_l1 = T.alloc_L1([C, M], dtype)
+            b_l1 = T.alloc_L1([C, N], dtype)
+            o_l0 = T.alloc_L0C([M, N], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(Bm[b, h, 0, 0], b_l1)
+            T.gemm_v0(a_l1, b_l1, o_l0, transpose_A=True, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
+
+    return main
+
+
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
 def gdn_v3_tb(B, H, C, M, N, dtype="float16", accum="float"):
     """O = A B^T,  A:[C,N], B:[M,N] -> [C,M]"""
 
@@ -660,7 +682,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     k_gate = gdn_v3_gate(B, H, C)
     k_ge = gdn_v3_gate_edo(B, H, C, DV)
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
-    k_ta_dvn = gdn_v3_ta(B, H, C, DV, DK)  # dvnew^T W  /  e_do^T Q
+    k_ta_dvn32 = gdn_v3_ta32(B, H, C, DV, DK)  # Δ' 的两个分量，fp32 输出
     k_tb_kt = gdn_v3_tb(B, H, C, DV, DK)   # Kt Delta'^T
     k_mm = gdn_v3_mm(B, H, C, DV, DK)
     k_vnew = gdn_v3_vnew(B, H, C, DV, DK)      # vnew @ Delta'  /  dvnew @ H_in
@@ -750,9 +772,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             kt_c = k_scale(d["Kc"], d["th"])              # golden 用 Kt = th .* K（B1）
             dvnew = base + k_tb_kt(kt_c, _hi)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
-        tq = k_ta_dvn(d["edo"], d["Qc"])
-        tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
-        nxt = tq.float() + tw_n.float()              # e_do^T Q - dvnew^T W
+        tq = k_ta_dvn32(d["edo"], d["Qc"])           # e_do^T Q      (fp32)
+        tw_n = k_ta_dvn32(dvnew, d["wm_n"])          # dvnew^T (-W)  (fp32)
+        nxt = tq + tw_n                               # Δ' 全程 fp32
         if c < NC - 1:
             nxt = nxt + d["glast"][:, :, None, None] * cache[c + 1]["delta_f32"]
         # 只存 fp32；hi/lo 由消费者现派生（[103]：fp16 每轮舍入一次，拆 hi/lo 得 22 位）
