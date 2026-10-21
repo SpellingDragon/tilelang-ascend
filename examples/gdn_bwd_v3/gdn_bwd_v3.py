@@ -419,7 +419,7 @@ def gdn_v3_tb(B, H, C, M, N, dtype="float16", accum="float"):
 
     return main
 
-@tilelang.jit(out_idx=[3], pass_configs=_PASS)
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)   # (Ones, X, O) -> O is index 2
 def gdn_v3_colsum(B, H, C, N, dtype="float16", accum="float"):
     """列和：ones(16,C) @ X -> [16,N]，第 0 行即 colsum(X)。"""
 
@@ -541,20 +541,13 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         k, v, beta, ws_g, ws_a, h0)
     torch.npu.synchronize()
 
-    k_ab = gdn_v3_ab(B, H, C, DV)
     k_ab_k = gdn_v3_ab(B, H, C, DK)
     k_vnew = gdn_v3_vnew(B, H, C, DV, DK)
-    k_wh = gdn_v3_wh(B, H, C, DV, DK)
-    k_raw = gdn_v3_raw(B, H, C, DK)
     k_dp = gdn_v3_dp(B, H, C, DV)
     k_dq = gdn_v3_dq(B, H, C, DK, DV)
     k_dk = gdn_v3_dk(B, H, C, DK)
     k_dv = gdn_v3_dv(B, H, C, DV)
     k_scale = gdn_v3_scale(B, H, C, DV)
-    k_scale_k = gdn_v3_scale(B, H, C, DK)
-    k_sbe = gdn_v3_scale_be(B, H, C, DK)
-    k_sub = gdn_v3_sub(B, H, C, DV)
-    k_gate = gdn_v3_gate(B, H, C)
     k_ge = gdn_v3_gate_edo(B, H, C, DV)
 
     dq = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
@@ -643,17 +636,13 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         k, v, beta, ws_g, ws_a, h0)
     torch.npu.synchronize()
 
-    k_ab = gdn_v3_ab(B, H, C, DV)
     k_ab_k = gdn_v3_ab(B, H, C, DK)
     k_vnew = gdn_v3_vnew(B, H, C, DV, DK)
-    k_wh = gdn_v3_wh(B, H, C, DV, DK)
     k_raw = gdn_v3_raw(B, H, C, DK)
     k_dp = gdn_v3_dp(B, H, C, DV)
     k_dq = gdn_v3_dq(B, H, C, DK, DV)
     k_dk = gdn_v3_dk(B, H, C, DK)
     k_scale = gdn_v3_scale(B, H, C, DV)
-    k_sbe = gdn_v3_scale_be(B, H, C, DK)
-    k_sub = gdn_v3_sub(B, H, C, DV)
     k_gate = gdn_v3_gate(B, H, C)
     k_ge = gdn_v3_gate_edo(B, H, C, DV)
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
