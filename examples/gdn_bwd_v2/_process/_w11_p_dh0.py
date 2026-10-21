@@ -21,29 +21,23 @@ _pass = {
 }
 
 
-@tilelang.jit(out_idx=[4], pass_configs=_pass)
-def k_dh(B, H, C, DV, DK, dtype="float16", accum="float"):
-    """cube: DH = EDO^T Q - DVN^T W  (two transposed-A gemms into one L0C)."""
+@tilelang.jit(out_idx=[2], pass_configs=_pass)
+def k_tat(B, H, C, M, N, dtype="float16", accum="float"):
+    """cube: one transposed-A gemm, O = A^T B.  One gemm per kernel (A route)."""
 
     @T.prim_func
-    def main(EDO: T.Tensor([B, H, C, DV], dtype), Q: T.Tensor([B, H, C, DK], dtype),  # type: ignore
-             DVN: T.Tensor([B, H, C, DV], dtype), W: T.Tensor([B, H, C, DK], dtype),  # type: ignore
-             DH: T.Tensor([B, H, DV, DK], dtype)):  # type: ignore
+    def main(A: T.Tensor([B, H, C, M], dtype), Bm: T.Tensor([B, H, C, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, M, N], dtype)):  # type: ignore
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
-            edo_l1 = T.alloc_L1([C, DV], dtype)   # A (transposed)
-            q_l1 = T.alloc_L1([C, DK], dtype)     # B
-            dvn_l1 = T.alloc_L1([C, DV], dtype)   # A (transposed)
-            w_l1 = T.alloc_L1([C, DK], dtype)     # B
-            o_l0 = T.alloc_L0C([DV, DK], accum)
-            T.copy(EDO[b, h, 0, 0], edo_l1)
-            T.copy(Q[b, h, 0, 0], q_l1)
-            T.copy(DVN[b, h, 0, 0], dvn_l1)
-            T.copy(W[b, h, 0, 0], w_l1)
-            T.gemm_v0(edo_l1, q_l1, o_l0, transpose_A=True, init=True)
-            T.gemm_v0(dvn_l1, w_l1, o_l0, transpose_A=True, init=False)
-            T.copy(o_l0, DH[b, h, 0, 0])
+            a_l1 = T.alloc_L1([C, M], dtype)   # A operand (transposed)
+            b_l1 = T.alloc_L1([C, N], dtype)   # B operand
+            o_l0 = T.alloc_L0C([M, N], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(Bm[b, h, 0, 0], b_l1)
+            T.gemm_v0(a_l1, b_l1, o_l0, transpose_A=True, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
 
     return main
 
@@ -67,8 +61,10 @@ def main():
     e_do = (np.asarray(ca["e_vec"], np.float64)[:, None] * DOn[sl]).astype(np.float16)
     dvn = np.asarray(ca["vnew"], np.float64).astype(np.float16)
     wm = np.asarray(ca["w_mat"], np.float64).astype(np.float16)
-    out = k_dh(B, H, C, DV, DK)(f16(e_do), f16(Qn[sl]), f16(dvn), f16(wm))
-    got = out.float().cpu().numpy()[0, 0].astype(np.float64)
+    ker = k_tat(B, H, C, DV, DK)
+    t1 = ker(f16(e_do), f16(Qn[sl])).float().cpu().numpy()[0, 0].astype(np.float64)
+    t2 = ker(f16(dvn), f16(wm)).float().cpu().numpy()[0, 0].astype(np.float64)
+    got = t1 - t2
     ref_math = (e_do.astype(np.float64).T @ Qn[sl]) - (dvn.astype(np.float64).T @ wm.astype(np.float64))
     rel_k = float(np.abs(got - ref_math).max() / (np.abs(ref_math).max() + 1e-30))
     rel_g = float(np.abs(got - dh0_g).max() / (np.abs(dh0_g).max() + 1e-30))
