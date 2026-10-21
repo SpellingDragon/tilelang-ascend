@@ -738,11 +738,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if c >= NC - 1:
             dvnew = base
         else:
-            _d32 = cache[c + 1]["delta_f32"]
-            _hi = _d32.to(dt)
-            _lo = (_d32 - _hi.float()).to(dt)
+            _hi = cache[c + 1]["delta_f32"].to(dt)
             kt_c = k_scale(d["Kc"], d["th"])              # golden 用 Kt = th .* K（B1）
-            dvnew = base + k_tb_kt(kt_c, _hi) + k_tb_kt(kt_c, _lo)
+            dvnew = base + k_tb_kt(kt_c, _hi)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
         tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
@@ -756,19 +754,18 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         if c < NC - 1:
-            _d32b = cache[c + 1]["delta_f32"]
-            nxt_delta = _d32b.to(dt)
-            nxt_lo = (_d32b - nxt_delta.float()).to(dt)
+            nxt_delta = cache[c + 1]["delta_f32"].to(dt)
+            nxt_lo = None
         else:
             nxt_delta = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
-            nxt_lo = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
+            nxt_lo = None
         # H1：DV==C 时 A@X 与 A@[C,N] 同义，优先用已验证的 ab（mm 从未单独验过）
         if c >= NC - 1:
             dkt = torch.zeros_like(dk[:, :, sl, :])
         elif DV == C:
-            dkt = k_ab_dv(d["vnew"], nxt_delta) + k_ab_dv(d["vnew"], nxt_lo)
+            dkt = k_ab_dv(d["vnew"], nxt_delta)
         else:
-            dkt = k_mm(d["vnew"], nxt_delta) + k_mm(d["vnew"], nxt_lo)
+            dkt = k_mm(d["vnew"], nxt_delta)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
