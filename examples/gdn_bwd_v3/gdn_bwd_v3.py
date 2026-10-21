@@ -601,7 +601,7 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     return dq, dk, dv
 
 
-def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
+def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64, hs_override=None):
     """完整反向：先正向缓存 vnew，再反向扫 Delta'，输出 (dq, dk, dv, dh0)。
 
     依据 `_np_chunk_bwd` 的 B1-B10（见 notes [91]）：
@@ -708,7 +708,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
         Ac, Gc = ws_a[:, :, sl, :], ws_g[:, :, sl]
         Ec = torch.exp(Gc)
-        Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
+        Hc = ws_h[:, :, c, :, :] if hs_override is None else hs_override[:, :, c]
+        Betac, Gamc = beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
         bek_n = k_scale(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它

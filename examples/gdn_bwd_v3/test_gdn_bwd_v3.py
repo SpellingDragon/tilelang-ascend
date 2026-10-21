@@ -24,7 +24,8 @@ for p in (_HERE, _V2, "/tmp", "/tmp/ta_unpack/ta_pkg"):
 
 import torch_npu  # noqa: F401,E402
 
-from test_gdn_bwd_v2 import _case_inputs, _golden_item, check_precision  # noqa: E402
+from test_gdn_bwd_v2 import (_case_inputs, _golden_item, _np_chunk_fwd,  # noqa: E402
+                            check_precision)
 
 from gdn_bwd_v3 import gdn_bwd_v3, gdn_bwd_v3_relay  # noqa: E402
 
@@ -67,9 +68,22 @@ def run_relay(B, H, T_len, DK, DV, C):
     torch.manual_seed(7)
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
     dev, dt = "npu", torch.float16
+    # 用 golden 的 H_in（fp64→fp16）跑一遍：若 dk/dbeta 明显改善，说明残差来自
+    # v2 的 scan1 递推精度（这是"改前置"之前的判定实验）
+    import os as _os
+    _hs = None
+    if _os.environ.get("GDN_V3_GOLDEN_H", "1") == "1":
+        _q = q.double().numpy()[0, 0]
+        _, _cache = _np_chunk_fwd(T_len, DK, DV, _q, k.double().numpy()[0, 0],
+                                  v.double().numpy()[0, 0], beta.double().numpy()[0, 0],
+                                  g.double().numpy()[0, 0], h0.double().numpy()[0, 0], C)
+        _hs = torch.from_numpy(
+            np.stack([np.asarray(_cache[i]["hin"], np.float64) for i in range(T_len // C)])
+            .astype(np.float16))[None, None].to(dev)
+        print(f"RELAYH T={T_len} 用 golden H_in（替换 scan1 的输出）", flush=True)
     _out = gdn_bwd_v3_relay(
         q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
-        beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C)
+        beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C, hs_override=_hs)
     dq, dk, dv, dbeta, dg, dh0 = _out[:6]
     if len(_out) == 7:      # GDN_V3_DK_SPLIT=1：把四项各自与 golden 比
         for k, v_part in _out[6].items():
