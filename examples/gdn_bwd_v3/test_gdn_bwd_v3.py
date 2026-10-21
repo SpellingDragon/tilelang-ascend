@@ -16,7 +16,9 @@ import torch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _V2 = os.path.join(os.path.dirname(_HERE), "gdn_bwd_v2")
-for p in (_V2, _HERE):
+# 卡上：/tmp（本脚本与 v2/v3 模块）+ /tmp/ta_unpack/ta_pkg（tilelang 本体）。
+# 不依赖外部 PYTHONPATH —— 显式设置会把它覆盖掉。
+for p in (_HERE, _V2, "/tmp", "/tmp/ta_unpack/ta_pkg"):
     if p not in sys.path:
         sys.path.insert(0, p)
 
