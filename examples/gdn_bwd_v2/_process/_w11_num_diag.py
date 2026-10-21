@@ -1,8 +1,12 @@
 # w11 numeric diag — 逐 stage / 逐边界 box 统计 nan/inf/absmax（fp32 basic 复现全 nan）
+import os
 import sys
 
 sys.path.insert(0, "/tmp")
 import torch  # noqa: E402
+# fixed seed: _case_inputs has none, and without it every run draws
+# different data -- cross-car comparisons become meaningless (10-21 finding).
+torch.manual_seed(7)
 import torch_npu  # noqa: E402,F401
 from gdn_bwd_v2 import (  # noqa: E402
     gdn_bwd_v2_cumsum,
@@ -50,6 +54,10 @@ def run(tag, args):
         k, v, beta, ws_g, ws_a, msk_j, ones_dv, ones_dk, ones_c,
         outs_a[2], outs_a[3], outs_a[4], outs_a[5], outs_a[6], outs_a[7], outs_a[8])
     torch.npu.synchronize()
+    if os.environ.get("GDN_S2B_DBG") == "1":
+        # the probe overwrote this scan2a output with what scan2b read for
+        # dVnew; compare against the box's out2 (both are the same tensor).
+        stat("s2b_probe_dvread", outs_a[8])
     names = ["dkg", "dvg", "dbeta", "dg"]
     for i, o in enumerate(outs_b):
         stat(f"s2b_{names[i] if i < 4 else i}", o)

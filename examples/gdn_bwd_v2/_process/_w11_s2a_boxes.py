@@ -16,6 +16,9 @@ import sys
 sys.path.insert(0, "/tmp")
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+# fixed seed: _case_inputs has none, and without it every run draws
+# different data -- cross-car comparisons become meaningless (10-21 finding).
+torch.manual_seed(7)
 
 from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd  # noqa: E402
 

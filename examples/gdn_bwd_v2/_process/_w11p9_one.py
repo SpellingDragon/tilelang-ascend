@@ -4,6 +4,9 @@ import sys
 sys.path.insert(0, "/tmp")
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+# fixed seed: _case_inputs has none, and without it every run draws
+# different data -- cross-car comparisons become meaningless (10-21 finding).
+torch.manual_seed(7)
 
 try:
     import torch_npu  # noqa: F401,E402
@@ -21,6 +24,9 @@ def main(dtype="float16", case="basic"):
         "basic": (1, 1, 64, 64, 64, "zero", False),
         "typical": (1, 2, 256, 64, 64, "zero", False),
         "h0": (1, 2, 256, 64, 64, "on", False),
+        # single batch, four chunks: separates per-chunk relay problems from
+        # the B*H>1 cid-offset problems that l0_typical (H=2) mixes together.
+        "multi": (1, 1, 256, 64, 64, "zero", False),
     }[case]
     B, H, T, DK, DV, h0m, sp = shapes
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T, DK, DV, dtype, h0m, sp)

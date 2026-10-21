@@ -437,11 +437,13 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 | 常数输入验证 | solve_a/scan1 只用 g≡0 | 使 C2 潜伏七个窗口 |
 | 共享 lane 中转 | `io_bq`（dVnew 写回）、`io_bq2`（scan2b 的 dVnew 读） | 前者全 0、后者 nan；**中转必须专用** |
 | 替换算子后残留旧算子 | plan-10c 把列广播换成 GM 读 GAM，但保留了下方的 `T.exp` | Gamma 被 exp 两次 → 上三角 inf → NaN（D16）；**替换时必须同 commit 删除被替代的表达式** |
+| 同一 L1 lane 兼作 A 与 Aᵀ | `bq_l1` 已是 no-transpose dW GEMM 的 A，再用于 `dVnew^T(-W)` 的 transpose_A GEMM | DH0 停在 4.58e-1（D17）；**A 与 Aᵀ 的布局不可共用一条 lane，必须专用 lane** |
+| 新增 L1 lane 直接替换既有 lane | `dv_b_l1` 专供 t1 的 B 操作数 | t1 输出全 0（dv=4.847e-1=golden absmax）；**新增 lane 的装载与 GEMM 之间需要可验证的绑定，不能假定 pass 会自动接线** |
 
 ### 18.4 缺陷编号归属（防混淆）
 
 | 编号 | 归属 | 载体 |
 |---|---|---|
 | D1–D4、D7 | **平台/后端** | `release/ascend/port910b/ta_defect_dossier.md`（对外素材） |
-| D8、D13、D15、D16 | **本算子**（算侧可修） | 本文件 §18 与本 run notes |
+| D8、D13、D15、D16、D17 | **本算子**（算侧可修） | 本文件 §18 与本 run notes；D17 = A/Aᵀ 同 lane（待专用 lane 修） |
 | D9–D12、D14 | 已证伪/被取代的中间假设 | run notes（保留不改写） |

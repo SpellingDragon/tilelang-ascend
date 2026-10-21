@@ -8,6 +8,9 @@ import sys
 sys.path.insert(0, "/tmp")
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+# fixed seed: _case_inputs has none, and without it every run draws
+# different data -- cross-car comparisons become meaningless (10-21 finding).
+torch.manual_seed(7)
 
 try:
     import torch_npu  # noqa: F401,E402
