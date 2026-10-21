@@ -118,6 +118,18 @@ def run_relay(B, H, T_len, DK, DV, C):
     return ok
 
 
+def _level():
+    if "--level" in sys.argv:
+        return sys.argv[sys.argv.index("--level") + 1]
+    return "l0"
+
+
+def run_stubs(level):
+    """L1/L2/Boundary 的占位：由 tilelang-op-test-design 填充（见 tasks 9.2 P4）。"""
+    print(f"[{level}] 待 tilelang-op-test-design 填充", flush=True)
+
+
+
 def main():
     level = _level()
     ok = True
