@@ -12,12 +12,13 @@
 # 判读：
 #   rel(gold, P^T dO) 小  ⇒ 操作数正确，GEMM 本身错（换 tB 形态）
 #   rel(gold, P^T dO) 大  ⇒ 看 P / dO 谁非有限，回到对应交接链
+import os
 import sys
 
 import numpy as np
 
 sys.path.insert(0, "/tmp")  # 卡上导出时用；本地运行时忽略
-sys.path.insert(0, "/Users/pengweiye/Documents/codes/tilelang-ascend/examples/gdn_bwd_v2")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd  # noqa: E402
 

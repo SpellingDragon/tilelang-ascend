@@ -9,10 +9,12 @@
 # 前插 `if cut >= 4:`；`for bv in T.serial(bv_num):` 前插 `if cut >= 5:`；
 # `# ---- dW -> WS_DW boundary` 前插 `if cut >= 6:`。
 # 每段内部逐行 +4 空格缩进（空行不动）。
+import os
 import sys
 
-SRC = "/Users/pengweiye/Documents/codes/tilelang-ascend/examples/gdn_bwd_v2/gdn_bwd_v2.py"
-OUT = "/Users/pengweiye/Documents/codes/tilelang-ascend/examples/gdn_bwd_v2/_process/_w11_scan2a_cut.py"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(os.path.dirname(_HERE), "gdn_bwd_v2.py")
+OUT = os.path.join(_HERE, "_w11_scan2a_cut.py")
 
 lines = open(SRC).read().split("\n")
 
