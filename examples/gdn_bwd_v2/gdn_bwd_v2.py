@@ -566,7 +566,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             hin_l1 = T.alloc_L1([BV, BK], dtype)  # H_in half (B5a/B5b/B6)
             dhp_l1 = T.alloc_L1([BV, BK], dtype)  # Delta' half (B1)
             bq_l1 = T.alloc_L1([C, BV], dtype)  # dO (B1/B2)
-            vnew_l1 = T.alloc_L1([C, BV], dtype)  # Vnew (B2/B6b)
+            vnew_l1 = T.alloc_L1([C, BV], dtype)  # Vnew (B2 only: B6b now takes dVnew)
             t1_l1 = T.alloc_L1([C, BV], dtype)  # (E .* dO) / rowsum source
             bv_l1 = T.alloc_L1([C, BV], dtype)  # beta .* V (U0 GEMM input)
             onesbv_l1 = T.alloc_L1([BV, 16], dtype)  # rowsum over BV cols
