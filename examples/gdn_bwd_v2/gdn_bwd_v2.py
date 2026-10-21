@@ -514,7 +514,7 @@ def gdn_bwd_v2_scan1(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="f
 #    consumer now share one kernel).
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
-              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32],
+              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31],
               pass_configs=pass_configs)
 def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
@@ -560,10 +560,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         # and DQ came out all zeros (w11 diag; see notes [45]).
         workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
         workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
-        # A-only staging for the Vnew GEMM. workspace_w must keep one vec write
-        # against one cube read (cv-sync pairs per buffer, #1019), so the second
-        # cube consumer needs its own lane.
-        workspace_wa: T.Tensor([B * H, C, DK], accum_dtype),  # type: ignore  -W halves (A operand)
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -578,11 +574,6 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             kt_l1 = T.alloc_L1([C, BK], dtype)  # th .* K half (B1)
             bek_l1 = T.alloc_L1([C, BK], dtype)  # bee .* K half (W derivation)
             w_full_l1 = T.alloc_L1([bk_num, C, BK], dtype)  # -W halves (S7g keep-alive box)
-            # Dedicated A-operand lanes for the Vnew GEMM. w_full_l1 serves as the
-            # B operand of B6b (dVnew^T (-W)), and one L1 lane cannot carry both
-            # layouts: using it as A for Wterm silently contributed nothing
-            # (Vnew == U0 to 4e-3 while Wterm should be 1.0e-1, notes [71]).
-            w_a_l1 = T.alloc_L1([bk_num, C, BK], dtype)  # A-only lane (B6b keeps w_full_l1 as B)
             hin_l1 = T.alloc_L1([BV, BK], dtype)  # H_in half (B5a/B5b/B6)
             dhp_l1 = T.alloc_L1([BV, BK], dtype)  # Delta' half (B1)
             bq_l1 = T.alloc_L1([C, BV], dtype)  # dO (B1/B2)
@@ -697,11 +688,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # -W half
                     T.copy(xk_ub, io_xk)
                     T.copy(io_xk, workspace_w[cid, :, hh * BK])
-                    T.copy(io_xk, workspace_wa[cid, :, hh * BK])
-                    # one write and one read per lane: workspace_w feeds the B
-                    # operand (w_full_l1), workspace_wa feeds the A operand
+                    # S7g: single read-back keeps every half alive in L1 for the
+                    # two later GEMM consumers (workspace_w stays strict 1W1R)
                     T.copy(workspace_w[cid, 0, hh * BK], w_full_l1[hh, :, :])  # #1198: no ':' before a scalar offset
-                    T.copy(workspace_wa[cid, 0, hh * BK], w_a_l1[hh, :, :])  # #1198 form
                 # ---- raw QK^T -> workspace_lcc stash (B3 read-before-clobber)
                 #      P = (raw .* Gam) .* M -> p_l1 (S7e :640-646 order) ----
                 for hh in T.serial(bk_num):
@@ -834,7 +823,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     #      illegal: tl.ascend_fill mixes Cube/Vector, S7f erratum)
                     for hh in T.serial(bk_num):
                         T.copy(WS_H[b, h, cc, bv * BV, hh * BK], hin_l1)  # H_in reload (GM->L1 direct)
-                        T.gemm_v0(w_a_l1[hh, :, :], hin_l1, u0_l0, transpose_B=True, init=False)
+                        T.gemm_v0(w_full_l1[hh, :, :], hin_l1, u0_l0, transpose_B=True, init=False)
                     T.copy(u0_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], wh_ub)  # Vnew = U0 + W H^T
                     if _S2A_VN_DBG and cc == _S2A_VN_CC:
