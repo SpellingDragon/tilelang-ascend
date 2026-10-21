@@ -727,7 +727,6 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     torch.npu.synchronize()
 
     # ---- pass 2: 反向扫 Delta' ----
-    delta = None
     dh0 = None
     for c in range(NC - 1, -1, -1):
         d = cache[c]
@@ -735,31 +734,31 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         print(f"RELAYP2 c={c}", flush=True)
         # dvnew = P^T dO + Kt Delta'^T
         base = k_ta(d["P"], d["DOc"])
-        if delta is None:
+        # Δ' 一律从 cache 的 fp32 现派生 hi/lo，不在循环间保留变量（避免"跨迭代变量"）
+        if c >= NC - 1:
             dvnew = base
         else:
-            # golden 用的是 Kt = th .* K（B1），不是 K
-            kt_c = k_scale(d["Kc"], d["th"])              # th 已是 [B,H,C] fp32
-            dvnew = base + k_tb_kt(kt_c, delta) + k_tb_kt(kt_c, delta_lo)
+            _d32 = cache[c + 1]["delta_f32"]
+            _hi = _d32.to(dt)
+            _lo = (_d32 - _hi.float()).to(dt)
+            kt_c = k_scale(d["Kc"], d["th"])              # golden 用 Kt = th .* K（B1）
+            dvnew = base + k_tb_kt(kt_c, _hi) + k_tb_kt(kt_c, _lo)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
         tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
         nxt = tq.float() + tw_n.float()              # e_do^T Q - dvnew^T W
-        if delta is not None:
-            nxt = nxt + d["glast"][:, :, None, None] * delta.float()
-        # Δ' 拆高低位：fp16 每轮舍入一次，c=2/c=3 累积到 1.3e-2（[103]）。
-        # 保持 fp32 的 delta_f32，消费时拆成 hi + lo 各做一次 GEMM（精度 11 -> 22 位）。
+        if c < NC - 1:
+            nxt = nxt + d["glast"][:, :, None, None] * cache[c + 1]["delta_f32"]
+        # 只存 fp32；hi/lo 由消费者现派生（[103]：fp16 每轮舍入一次，拆 hi/lo 得 22 位）
         delta_f32 = nxt
-        delta = delta_f32.to(dt)
-        delta_lo = (delta_f32 - delta.float()).to(dt)
         # 四项各自打印 abs.max，与本地基线对表（3.8~6.3 / 0.13~0.33 / 0~2.5 / 0.38~0.44）
         _dk1 = k_dk(d["dqkt"], d["Qc"])
         print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         if c < NC - 1:
-            _d32 = cache[c + 1]["delta_f32"]
-            nxt_delta = _d32.to(dt)
-            nxt_lo = (_d32 - nxt_delta.float()).to(dt)
+            _d32b = cache[c + 1]["delta_f32"]
+            nxt_delta = _d32b.to(dt)
+            nxt_lo = (_d32b - nxt_delta.float()).to(dt)
         else:
             nxt_delta = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
             nxt_lo = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
@@ -839,10 +838,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
               f"|r1|={r1.abs().max():.3e} |r2|={r2.abs().max():.3e}", flush=True)
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
-        d["delta_next"] = delta
         d["delta_f32"] = delta_f32
         if c == 0:
-            dh0 = delta
+            dh0 = delta_f32.to(dt)
     if _oneshot:
         dk = torch.cat(dk_buf, dim=2)          # [B,H,T,DK]，一次 aclnn
     torch.npu.synchronize()
