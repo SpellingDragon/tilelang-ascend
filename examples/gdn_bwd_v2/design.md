@@ -426,7 +426,8 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 | 项 | 现状 | 影响 |
 |---|---|---|
 | **dKt = Vnew·Δ'ᵀ**（B9/B10 跨 chunk 项） | 无 GEMM 实现；`WS_DKT` 恒 0 | 单 chunk 与 golden 一致；**多 chunk 数值不正确**（已知 gap） |
-| 变长 seq_lens、bf16 | 不支持（v1 遗留裁决③④） | — |
+| 变长 seq_lens、bf16 | 不支持（v1 遗留裁决③④）；bf16 若要做，按 tilelang-ascend #1799 的 bf16 GEMM 路线单列 | — |
+| **fp32 主档** | **不支持**：fp32 plain/transA GEMM 出 nan/inf（D7，平台缺陷，`ta_defect_dossier.md`） | **交付以 fp16 为准**；测试中的 fp32 case 仅作参考，不作门槛 |
 
 ### 18.3 已否清单（重试必须给出新的因果理由）
 
