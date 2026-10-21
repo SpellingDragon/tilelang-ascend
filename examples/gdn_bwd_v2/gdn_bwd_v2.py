@@ -701,17 +701,14 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # (plan-9 scalar read / plan-9b two-tile Sub + dedicated buffer,
                 # both 507014), while the identical form runs in cumsum/solve_a.
                 T.copy(WS_GAM[b, h, cc, 0, 0], aux_ub)
-                # Gamma = exp(gam_r - gam_c) per design L49 / CPU golden
-                # (test_gdn_bwd_v2.py:237). The neg that used to sit here
-                # flipped it to exp(gam_c - gam_r): the lower triangle then
-                # reached ~1e13, P overflowed fp16 to inf and the mask mul
-                # turned it into nan (w11 diag: s2a out0/3/4/8 nan). The old
-                # `zero_ub[i] - aux_ub[i, j]` spelling (which carried that
-                # neg) also lowered to a 4B-stepped, non-32B-aligned VEC
-                # address in a 2D Parallel -> on-card 507015 (fixp 0xd8);
-                # both problems disappear with the direct exp below.
-                for (i, j) in T.Parallel(C, C):
-                    aux_ub[i, j] = T.exp(aux_ub[i, j])
+                # aux now holds Gamma = exp(gam_r - gam_c), already
+                # exponentiated by the vector-only cumsum kernel (plan-10c).
+                # Do NOT exp again: a leftover exp here (D16) squared the
+                # ratio -- the diagonal became e and the upper triangle
+                # exp(1.6e11) -> +inf, whose product with M(=0) turned into
+                # NaN (G1 dump: 1397 upper-triangle NaNs, all finite upper
+                # entries 0). dA below reads the same GAM without an extra
+                # exp, which is why dq stayed correct while P/dVnew/dW did not.
                 T.copy(workspace_lcc[cid, :, :], da_ub)  # raw
                 # UB-side raw keep-alive (pk2 is dead until the dP dump below;
                 # keeps workspace_lcc at strict W-R-W-R sync pairing, S7f fix-2)
@@ -792,11 +789,18 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         dgam_ub[n_tail - 1] = dgam_ub[n_tail - 1] + scal_ub[0] * glast_ub[0]
                     else:
                         dgam_ub[C - 1] = dgam_ub[C - 1] + scal_ub[0] * glast_ub[0]
-                    # dVnew -> WS_DV boundary (main dtype)
-                    T.copy(dvnew_l0, workspace_lcb[cid, :, :])
-                    T.copy(workspace_lcb[cid, :, :], t1_ub)
-                    T.copy(t1_ub, io_bq)
-                    T.copy(io_bq, WS_DV[b, h, cc * C, bv * BV])
+                    # dVnew -> WS_DV boundary (main dtype). Take L0C straight to
+                    # UB (the dq1_l0 precedent): the GM staging lane lcb is
+                    # written three times per iteration (dvnew / u0 / qh), and
+                    # the AIV read of the first write raced the AIC, leaving
+                    # WS_DV all-zero while the same L0C value wrote dW
+                    # correctly through the second read (box: out3 4.8e-4).
+                    # fp32 -> fp16 must go through a UB hop (bisheng rejects
+                    # the mixed dtype UB->GM copy); io_cc is idle inside the BV
+                    # loop and C == BV in every configuration.
+                    T.copy(dvnew_l0, t1_ub)
+                    T.copy(t1_ub, io_cc)
+                    T.copy(io_cc, WS_DV[b, h, cc * C, bv * BV])
                     # ---- W H^T half sum -> Vnew = U0 + (-W) H^T (S7e :685-689);
                     #      L0C box clears via init=(hh==0) only (fill on L0C is
                     #      illegal: tl.ascend_fill mixes Cube/Vector, S7f erratum)
