@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check_v3_static.py -- 发车前 30 秒的静态自查，覆盖本仓实际踩过的每一类错。
+"""check_tilelang_kernels.py -- 发车前 30 秒的静态自查（任何 @tilelang.jit kernel 通用）。
 
 检查项（编号对应 notes [90]/[94] 的事故）：
   S1  out_idx 指向的参数必须是输出：若指向本表里的"输入名"直接报错
@@ -8,8 +8,11 @@
   S4  kernel 体里引用的名字必须已定义（_step 那类 NameError）
   S5  torch.zeros_like(x) 的 x 不能在之前被赋 None（末 chunk 的 Delta'）
   S6  T.copy 的实参个数必须是 2
+  S7  host 侧 f16/f32 包装的实参 dtype 必须与 kernel 声明一致
+  S8  k_* 调用的实参个数 = 参数个数 - 输出个数
+  S9  T.Parallel 最多两维（3-D 是编译期 FATAL）
 
-用法：python3 tools/check_v3_static.py examples/gdn_bwd_v3/gdn_bwd_v3.py
+用法：python3 tools/check_tilelang_kernels.py examples/gdn_bwd_v3/gdn_bwd_v3.py [more.py ...]
 """
 
 from __future__ import annotations
@@ -205,6 +208,14 @@ def check_file(path: str) -> list[str]:
                     problems.append(
                         f"S7 第 {node.lineno} 行: {node.func.id} 第 {idx} 个实参用 f32 传给 "
                         f"{kname}.{params[idx]}（声明 {declared}）")
+
+    # S9：T.Parallel 最多两维（3-D 在 ascend_lower_parallel_to_vector.cc:298 是 LOG(FATAL)）
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "Parallel" and len(node.args) >= 3):
+            problems.append(
+                f"S9 第 {node.lineno} 行: T.Parallel 有 {len(node.args)} 维，"
+                f"超过 2 维会在 pass 里 LOG(FATAL)")
 
     # S5 zeros_like(None)
     none_vars = set()
