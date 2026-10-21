@@ -325,10 +325,10 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
 # ---------------------------- relay：反向扫描（P4） ----------------------------
 @tilelang.jit(out_idx=[2], pass_configs=_PASS)
 def gdn_v3_mm(B, H, C, M, N, dtype="float16", accum="float"):
-    """O = A @ X,  A:[B,H,C,M], X:[M,N] -> [B,H,C,N]   （X 与 batch 无关）"""
+    """O = A @ X,  A:[B,H,C,M], X:[B,H,M,N] -> [B,H,C,N]   （per batch-head）"""
 
     @T.prim_func
-    def main(A: T.Tensor([B, H, C, M], dtype), X: T.Tensor([M, N], dtype),  # type: ignore
+    def main(A: T.Tensor([B, H, C, M], dtype), X: T.Tensor([B, H, M, N], dtype),  # type: ignore
              O: T.Tensor([B, H, C, N], dtype)):  # type: ignore
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -337,7 +337,7 @@ def gdn_v3_mm(B, H, C, M, N, dtype="float16", accum="float"):
             x_l1 = T.alloc_L1([M, N], dtype)
             o_l0 = T.alloc_L0C([C, N], accum)
             T.copy(A[b, h, 0, 0], a_l1)
-            T.copy(X[0, 0], x_l1)
+            T.copy(X[b, h, 0, 0], x_l1)
             T.gemm_v0(a_l1, x_l1, o_l0, init=True)
             T.copy(o_l0, O[b, h, 0, 0])
 
@@ -476,6 +476,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dk_c    = dqkt_c^T Q_c + (beta E) .* t2_c + th_c .* (vnew_c Delta'_{c+1})
         dv_c    = beta_c .* (A_c^T dvnew_c)
     `dq` 与 relay 无关（`dqkt K + e_do H_in`），直接沿用第一遍。
+
+    **状态：初版，尚未上卡验证。** 已知的简化假设：
+      * `dbeta` / `dg` 尚未输出（它们依赖 t1/t2 的 rowsum，形态已由 dbeta/rows 验证）
+      * `th` 用 `exp(G_last - G)` 逐 token 展开；`dk` 的 `(beta E) .* t2` 项尚未并入
+      * `glast` 已按 (b,h) 保留，不再跨 batch 取均值
     """
     try:
         from gdn_bwd_v2 import (  # noqa: E402
