@@ -753,34 +753,35 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         t2n = k_ta_cdk(d["Ac"], dw)                     # A^T dw（含负号）
         neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
         dk[:, :, sl, :] = dk[:, :, sl, :] + k_scale(t2n, neg_be)
-        # dbeta = rowsum(V .* t1) + E .* rowsum(K .* t2)
-        r1 = k_rows_v(k_mulv(d["Vc"], t1), ones_v)[..., 0]
-        r2 = k_rows_k(k_mul(d["Kc"], t2n), ones_k)[..., 0]
-        # B11: dA 的两项 -> dL = M .* (-A^T dA A^T) -> dk 与 dbeta 各一项
-        # bek_n = -(beta E K)，所以第二项的符号是减
+        # ---- 以下按 golden 的 B7/B8/B11/B12/B10/B13/B9 顺序组装 ----
+        gam2 = d["Gamc"].float()
+        Ec = d["Ec"]
+        r1 = k_rows_v(k_mulv(d["Vc"], t1), ones_v)[..., 0]        # B7
+        r2 = k_rows_k(k_mul(d["Kc"], t2n), ones_k)[..., 0]        # B8（t2n 自带负号）
+        # B11: dA -> dL -> dk 与 dbeta
         da = k_tb_cv(dvnew, d["bv"]).float() - k_tb_ck(dw, d["bek_n"]).float()
         t_ = k_ta_cc(d["Ac"], da.to(dt))
         o_ = k_tb_cc(t_, d["Ac"]).float()
-        dl = msk_j[None, None] * (-o_)                       # [B,H,C,C] fp32
-        gam2 = d["Gamc"].float() if torch.is_tensor(d["Gamc"]) else d["Gamc"]
+        dl = msk_j[None, None] * (-o_)                             # [B,H,C,C] fp32
         dx = dl * d["Betac"][:, :, :, None] * gam2
-        dxs = (dx + dx.transpose(-1, -2)).to(dt)             # dx + dx^T
+        dxs = (dx + dx.transpose(-1, -2)).to(dt)
         dk[:, :, sl, :] = dk[:, :, sl, :] + k_ab_cc(dxs, d["Kc"])
-        kk = k_rawk(d["Kc"], d["Kc"]).float()                # K K^T
-        r3 = (dl * gam2 * kk).sum(-1)          # [C,C] 很小，host 求和即可
-        dbeta[:, :, sl] = dbeta[:, :, sl] + r3
-        # ---- B3/B9/B10/B11/B13/B14: dgam 与 dg ----
-        gam2 = d["Gamc"].float()
-        # B3 与 B11 先合成 dgam2，再统一乘 Gam 做 rowsum - colsum（B12）
+        kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
+        r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
+        dbeta[:, :, sl] = r1 - Ec * r2 + r3                        # B7 + B8 + B11
+        # B3+B11 合成 dgam2，B12 统一乘 Gam 做 rowsum - colsum
         dgam2 = d["dP"].float() * m_m * d["raw"].float() + dl * d["Betac"][:, :, :, None] * kk
-        dgam = dgam - dth * d["th"].float()                                # B10 第一项
-        dgam[:, :, -1] += (dth * d["th"].float()).sum(-1)                   # B10 第二项
-        qh = k_tb_qh(d["Qc"], d["Hc"])                                      # q H_in^T
-        de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * r2      # B5 + B8
         w12 = dgam2 * gam2
-        dgam = w12.sum(-1) - w12.sum(-2)                                    # B12
-        dgam = dgam + d["Ec"] * de                                         # B13
-        # B9 用的是「下一个 chunk 的 Delta'」（即 golden 的 dp_rel），不是当前这个
+        dgam = w12.sum(-1) - w12.sum(-2)                           # B12
+        # B10
+        th = d["th"].float()
+        dgam = dgam - dth * th
+        dgam[:, :, -1] += (dth * th).sum(-1)
+        # B13: dgam += E .* dE
+        qh = k_tb_qh(d["Qc"], d["Hc"])
+        de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * (-r2)
+        dgam = dgam + Ec * de
+        # B9: dgam[m-1] += glast * <H_in, Delta'_{c+1}>
         dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * nxt_delta.float()).sum((-1, -2))
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
