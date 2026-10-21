@@ -42,6 +42,14 @@ def main(dtype="float16", case="basic"):
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
         passed, ratio, max_abs = check_precision(got[item], ref, idts[item])
         print(f"ONE[{case}] {item} rel= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
+        if item == "dq" and T > 64:
+            # per-chunk split: a single bad chunk hides inside the global rel,
+            # and the reverse scan means chunk 0 is processed last.
+            g = np.asarray(got[item].double().numpy(), np.float64).reshape(-1, 64, DK)
+            r = np.asarray(ref, np.float64).reshape(-1, 64, DK)
+            for ci in range(g.shape[0]):
+                d = float(np.abs(g[ci] - r[ci]).max())
+                print(f"DQCHUNK[{case}] t{ci:02d} maxdiff={d:.3e} goldmax={float(np.abs(r[ci]).max()):.3e}")
         allok &= passed
     print(f"ONE[{case}]-DONE all={'PASS' if allok else 'FAIL'}")
     return allok

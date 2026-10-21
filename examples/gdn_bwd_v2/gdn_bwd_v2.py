@@ -1496,13 +1496,30 @@ def gdn_bwd_v2(q, k, v, g, beta, h0, do, chunk_size=64, NT_MAX=None):
     ones_c = torch.ones(C, 16, dtype=dt, device=dev)
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)  # plan-10c: Gamma too
+    # The probe drivers synchronise after every kernel and see clean values;
+    # a straight chain (no per-kernel sync) produced NaNs in the multi-chunk
+    # case while the twelve-box dump stayed finite (10-21). Make each hand-off
+    # explicit instead of relying on stream ordering.
+    torch.npu.synchronize()
+    ws_g[0, 0, 0].item()  # force a D2H on the stream that produced ws_g
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, BK, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
+    torch.npu.synchronize()
+    ws_a[0, 0, 0, 0].item()
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
+    torch.npu.synchronize()
+    ws_h[0, 0, 0, 0, 0].item()
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
+    # scan2b consumes nine tensors scan2a just produced. Every hand-off here
+    # keeps both a device sync and one tiny D2H read: adding the sync alone
+    # changed the one-case numbers (dv 0.4847 -> 0.6908) without fixing them,
+    # so the D2H is what actually orders the producing stream. The probe
+    # drivers do exactly this and their values are clean.
+    torch.npu.synchronize()
     # outs_a = (dq, dh0, ws_dv, ws_dw, ws_dkt, ws_de, ws_dgam2, ws_dgam, ws_dk)
+    outs_a[2][0, 0, 0, 0].item()
     outs_b = gdn_bwd_v2_scan2b(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         k, v, beta, ws_g, ws_a, msk_j, ones_dv, ones_dk, ones_c,
         outs_a[2], outs_a[3], outs_a[4], outs_a[5], outs_a[6], outs_a[7],

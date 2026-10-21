@@ -45,6 +45,33 @@ def run(tag, args):
         k, v, beta, ws_g, ws_a, h0)
     torch.npu.synchronize()
     stat("ws_h", ws_h)
+    # H2 check: scan1's cross-chunk state must match the fp64 replay per chunk.
+    # chunk 0's H_in is h0 itself, so a growing error means the recurrence is
+    # the culprit (the dq per-chunk split showed t00 exact, t01..t03 off 2-4%).
+    import numpy as _np
+    from test_gdn_bwd_v2 import _np_chunk_fwd as _nf
+    Qn, Kn, Vn = (q.double().cpu().numpy()[0, 0], k.double().cpu().numpy()[0, 0],
+                  v.double().cpu().numpy()[0, 0])
+    Bn, Gn, Hn = (beta.double().cpu().numpy()[0, 0], g.double().cpu().numpy()[0, 0],
+                  h0.double().cpu().numpy()[0, 0])
+    _, _cache = _nf(T_len, DK, DV, Qn, Kn, Vn, Bn, Gn, Hn, C)
+    _wh = ws_h.float().cpu().numpy()
+    # H3 check: Gamma per chunk must match the fp64 replay as well. The dq
+    # error is 1-4% on chunks 1..3 while WS_H is exact at 5e-4, and Gamma is
+    # the only other chunk-dependent input of dqkt.
+    _wg = ws_gam.float().cpu().numpy()
+    for _cc in range(len(_cache)):
+        _gg = _np.asarray(_cache[_cc]["gam_2d"], _np.float64)
+        _gc = _np.asarray(_wg[0, 0, _cc], _np.float64)
+        _dd = float(_np.abs(_gc - _gg).max())
+        print(f"GAM cc={_cc} maxdiff={_dd:.3e} goldmax={float(_np.abs(_gg).max()):.3e} "
+              f"rel={_dd / (float(_np.abs(_gg).max()) + 1e-30):.3e}")
+    for _cc in range(len(_cache)):
+        _g = _np.asarray(_cache[_cc]["hin"], _np.float64)
+        _c = _np.asarray(_wh[0, 0, _cc], _np.float64)
+        _d = float(_np.abs(_c - _g).max())
+        print(f"S1G cc={_cc} maxdiff={_d:.3e} goldmax={float(_np.abs(_g).max()):.3e} "
+              f"rel={_d / (float(_np.abs(_g).max()) + 1e-30):.3e}")
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
@@ -76,6 +103,10 @@ if __name__ == "__main__":
 
     _cases = [
         ("l0_basic_fp16", (1, 1, 64, 64, 64, "float16", "zero", False)),
+        # four chunks, single batch: the multi-chunk relay stages (WS_D / WS_H
+        # / WS_DGAM) first get exercised here; dq was 2.2e-1 on card while the
+        # single-chunk case sits at 1.9e-3.
+        ("l0_multi_fp16", (1, 1, 256, 64, 64, "float16", "zero", False)),
         ("l0_typical_fp16", (1, 2, 256, 64, 64, "float16", "zero", False)),
         ("l0_basic_fp32", (1, 1, 64, 64, 64, "float32", "zero", False)),
     ]
