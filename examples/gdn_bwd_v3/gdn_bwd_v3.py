@@ -619,6 +619,16 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_mm = gdn_v3_mm(B, H, C, DV, DK)
     k_vnew = gdn_v3_vnew(B, H, C, DV, DK)      # vnew @ Delta'  /  dvnew @ H_in
     k_ta_cdk = gdn_v3_ta(B, H, C, C, DK)   # A^T dw
+    k_tb_cv = gdn_v3_tb(B, H, C, C, DV)    # da 的第一项：dvnew (beta V)^T
+    k_tb_ck = gdn_v3_tb(B, H, C, C, DK)    # da 的第二项：dw (beta E K)^T
+    k_ta_cc = gdn_v3_ta(B, H, C, C, C)     # A^T da
+    k_tb_cc = gdn_v3_tb(B, H, C, C, C)     # (A^T da) A^T
+    k_rawk = gdn_v3_raw(B, H, C, DK)       # KKt = K K^T（同一形态）
+    k_ab_cc = gdn_v3_ab(B, H, C, C)        # (dx + dx^T) K
+    k_mul_cc = gdn_v3_mul(B, H, C, C)
+    k_rows_cc = gdn_v3_rowsum(B, H, C, C)
+    ones_c = torch.ones(C, 16, dtype=dt, device=dev)
+    msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     k_mul = gdn_v3_mul(B, H, C, DK)
     k_mulv = gdn_v3_mul(B, H, C, DV)
     k_rows_k = gdn_v3_rowsum(B, H, C, DK)
@@ -656,7 +666,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
-                          Betac=Betac, vnew=vnew, wm_n=wm_n, P=_P, dqkt=dqkt, edo=edo,
+                          Betac=Betac, vnew=vnew, wm_n=wm_n, bv=bv, bek_n=wm_n, Gamc=Gamc,
+                          P=_P, dqkt=dqkt, edo=edo,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
     torch.npu.synchronize()
@@ -697,7 +708,18 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         # dbeta = rowsum(V .* t1) + E .* rowsum(K .* t2)
         r1 = k_rows_v(k_mulv(d["Vc"], t1), ones_v)[..., 0]
         r2 = k_rows_k(k_mul(d["Kc"], t2n), ones_k)[..., 0]
-        dbeta[:, :, sl] = r1 - d["Ec"] * r2
+        # B11: dA 的两项 -> dL = M .* (-A^T dA A^T) -> dk 与 dbeta 各一项
+        da = (k_tb_cv(dvnew, d["bv"]) + k_tb_ck(dw, d["bek_n"])).float()
+        t_ = k_ta_cc(d["Ac"], da.to(dt))
+        o_ = k_tb_cc(t_, d["Ac"]).float()
+        dl = msk_j[None, None] * (-o_)                       # [B,H,C,C] fp32
+        gam2 = d["Gamc"].float() if torch.is_tensor(d["Gamc"]) else d["Gamc"]
+        dx = dl * d["Betac"][:, :, :, None] * gam2
+        dxs = (dx + dx.transpose(-1, -2)).to(dt)             # dx + dx^T
+        dk[:, :, sl, :] = dk[:, :, sl, :] + k_ab_cc(dxs, d["Kc"])
+        kk = k_rawk(d["Kc"], d["Kc"]).float()                # K K^T
+        r3 = k_rows_cc(k_mul_cc((dl * gam2 * kk).to(dt), 1), ones_c)[..., 0]
+        dbeta[:, :, sl] = dbeta[:, :, sl] + r3
         d["delta_next"] = delta
         if c == 0:
             dh0 = delta
