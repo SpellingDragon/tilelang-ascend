@@ -762,13 +762,14 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bv_l1)
                     T.gemm_v0(a_l1, bv_l1, u0_l0, init=True)
-                    # D20: workspace_lcb carries FOUR W-R groups per iteration
-                    # (U0 / Wterm / QH / dVnew) while cv-sync builds ONE flag
-                    # pair per buffer, so three of them are unordered. Taking
-                    # U0 straight from L0C to UB removes one group; the lane
-                    # keeps two (Wterm, QH), so the cube/vec pairing the pass
-                    # checks still exists (removing both tripped it, D21).
-                    T.copy(u0_l0, wh_ub)  # wh = U0 (L0C -> UB direct)
+                    # D20: lcb carried four W-R groups per iteration (U0 /
+                    # Wterm / QH / dVnew) against ONE cv-sync flag pair, so
+                    # three were unordered. Instead of peeling groups off (the
+                    # direct copy both tripped the pass check and hung the
+                    # compiler), U0 and Wterm now accumulate in the SAME L0C
+                    # and leave through lcb exactly once -- one group fewer and
+                    # one GM round-trip fewer. The read-out sits after the hh
+                    # loop below.
                     # ---- B1 half-loop: dVnew = P^T dO + sum_hh Kt_hh Dhp_hh^T,
                     #      with the B9 inner product <H_in, Delta'> folded into
                     #      the same half pass (x_ub dies here; the B5/B6
@@ -822,11 +823,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     #      illegal: tl.ascend_fill mixes Cube/Vector, S7f erratum)
                     for hh in T.serial(bk_num):
                         T.copy(WS_H[b, h, cc, bv * BV, hh * BK], hin_l1)  # H_in reload (GM->L1 direct)
-                        T.gemm_v0(w_full_l1[hh, :, :], hin_l1, u0_l0, transpose_B=True, init=(hh == 0))
+                        T.gemm_v0(w_full_l1[hh, :, :], hin_l1, u0_l0, transpose_B=True, init=False)
                     T.copy(u0_l0, workspace_lcb[cid, :, :])
-                    T.copy(workspace_lcb[cid, :, :], t1_ub)  # W H^T (D20: races)
-                    for (i, j) in T.Parallel(C, BV):
-                        wh_ub[i, j] = wh_ub[i, j] + t1_ub[i, j]  # Vnew
+                    T.copy(workspace_lcb[cid, :, :], wh_ub)  # Vnew = U0 + W H^T
                     if _S2A_VN_DBG and cc == _S2A_VN_CC:
                         # probe: Vnew as accumulated in fp32, straight into the
                         # dKt box (zero in production). L1->UB is rejected
