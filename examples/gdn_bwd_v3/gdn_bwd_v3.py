@@ -770,7 +770,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dgam = dgam - dth * th
         # B13: dgam += E .* dE
         qh = k_tb_qh(d["Qc"], d["Hc"])
-        de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * (-r2)
+        de1 = (d["DOc"].float() * qh.float()).sum(-1)
+        de2 = d["Betac"] * (-r2)
+        de = de1 + de2
+        print(f"RELAYDE c={c} de1m={de1.mean():+.4e} de2m={de2.mean():+.4e} "
+              f"de_em={(Ec * de).sum().item():+.4e}", flush=True)
         dgam = dgam + Ec * de
         print(f"RELAYDBG c={c} |da|={da.abs().max():.3e} |dl|={dl.abs().max():.3e} "
               f"|kk|={kk.abs().max():.3e} |de|={de.abs().max():.3e} "
