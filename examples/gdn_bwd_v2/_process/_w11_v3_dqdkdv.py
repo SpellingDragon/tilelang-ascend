@@ -79,6 +79,9 @@ def main():
     def f16(x):
         return torch.from_numpy(np.asarray(x, np.float64).astype(np.float16))[None, None].to("npu")
 
+    def f32(x):
+        return torch.from_numpy(np.asarray(x, np.float64).astype(np.float32))[None, None].to("npu")
+
     k1, k2, k3, k4, k5 = (k_raw(B, H, C, DK), k_gate(B, H, C), k_dp(B, H, C, DV),
                           k_gate_edo(B, H, C, DV), k_dq(B, H, C, DK, DV))
     k6, k7 = k_dk(B, H, C, DK), k_dv(B, H, C, DV)
@@ -87,10 +90,10 @@ def main():
         sl = slice(c * C, (c + 1) * C)
         ca = cache[c]
         raw = k1(f16(Qn[sl]), f16(Kn[sl]))
-        _P = k2(raw, f16(np.asarray(ca["gam_2d"])), f16(np.asarray(ca["msk_m"])))
+        _P = k2(raw, f32(np.asarray(ca["gam_2d"])), f32(np.asarray(ca["msk_m"])))
         dp = k3(f16(DOn[sl]), f16(np.asarray(ca["vnew"])))
-        dqkt, edo = k4(dp, f16(np.asarray(ca["gam_2d"])), f16(np.asarray(ca["msk_m"])),
-                       f16(np.asarray(ca["e_vec"])), f16(DOn[sl]))
+        dqkt, edo = k4(dp, f32(np.asarray(ca["gam_2d"])), f32(np.asarray(ca["msk_m"])),
+                       f32(np.asarray(ca["e_vec"])), f16(DOn[sl]))
         out_dq = k5(dqkt, f16(Kn[sl]), edo, f16(np.asarray(ca["hin"]))).float().cpu().numpy()[0, 0].astype(np.float64)
         out_dk = k6(dqkt, f16(Qn[sl])).float().cpu().numpy()[0, 0].astype(np.float64)
         t_dv = k7(f16(np.asarray(ca["a_mat"])), f16(np.asarray(ca["vnew"]))).float().cpu().numpy()[0, 0].astype(np.float64)

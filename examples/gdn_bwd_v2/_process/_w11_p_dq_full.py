@@ -168,6 +168,9 @@ def main():
     def f16(x):
         return torch.from_numpy(np.asarray(x, np.float64).astype(np.float16))[None, None].to("npu")
 
+    def f32(x):
+        return torch.from_numpy(np.asarray(x, np.float64).astype(np.float32))[None, None].to("npu")
+
     k1, k2, k3, k4, k5 = (k_raw(B, H, C, DK), k_gate(B, H, C), k_dp(B, H, C, DV),
                           k_gate_edo(B, H, C, DV), k_dq(B, H, C, DK, DV))
     ok = True
@@ -175,10 +178,10 @@ def main():
         sl = slice(c * C, (c + 1) * C)
         ca = cache[c]
         raw = k1(f16(Qn[sl]), f16(Kn[sl]))
-        P = k2(raw, f16(np.asarray(ca["gam_2d"])), f16(np.asarray(ca["msk_m"])))
+        P = k2(raw, f32(np.asarray(ca["gam_2d"])), f32(np.asarray(ca["msk_m"])))
         dp = k3(f16(DOn[sl]), f16(np.asarray(ca["vnew"])))
-        dqkt, edo = k4(dp, f16(np.asarray(ca["gam_2d"])), f16(np.asarray(ca["msk_m"])),
-                       f16(np.asarray(ca["e_vec"])), f16(DOn[sl]))
+        dqkt, edo = k4(dp, f32(np.asarray(ca["gam_2d"])), f32(np.asarray(ca["msk_m"])),
+                       f32(np.asarray(ca["e_vec"])), f16(DOn[sl]))
         out = k5(dqkt, f16(Kn[sl]), edo, f16(np.asarray(ca["hin"]))).float().cpu().numpy()[0, 0].astype(np.float64)
         rel = float(np.abs(out - dq_g[sl]).max() / (np.abs(dq_g[sl]).max() + 1e-30))
         print(f"DQF cc={c} rel={rel:.3e} goldmax={float(np.abs(dq_g[sl]).max()):.3e}")
