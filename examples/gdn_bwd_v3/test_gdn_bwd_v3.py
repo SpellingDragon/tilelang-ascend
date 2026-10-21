@@ -26,7 +26,7 @@ import torch_npu  # noqa: F401,E402
 
 from test_gdn_bwd_v2 import _case_inputs, _golden_item, check_precision  # noqa: E402
 
-from gdn_bwd_v3 import gdn_bwd_v3  # noqa: E402
+from gdn_bwd_v3 import gdn_bwd_v3, gdn_bwd_v3_relay  # noqa: E402
 
 
 def run_case(B, H, T_len, DK, DV, C, check_dkdv):
@@ -53,11 +53,36 @@ def run_case(B, H, T_len, DK, DV, C, check_dkdv):
     return ok
 
 
+def run_relay(B, H, T_len, DK, DV, C):
+    """多 chunk 的完整 relay：dk/dv/dh0 都应对上 golden。"""
+    torch.manual_seed(7)
+    (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
+    dev, dt = "npu", torch.float16
+    dq, dk, dv, dh0 = gdn_bwd_v3_relay(
+        q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
+        beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C)
+    torch.npu.synchronize()
+    ok = True
+    for item, val in (("dq", dq), ("dk", dk), ("dv", dv)):
+        ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
+        passed, ratio, max_abs = check_precision(val.cpu().float(), ref, "float16")
+        print(f"RELAY {item} rel={max_abs:.3e} verdict={'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
+        ok &= passed
+    ref0 = np.concatenate([_golden_item(gold, "dh0", b) for b in range(B)], axis=0)
+    passed0, ratio0, max_abs0 = check_precision(dh0.cpu().float().reshape(B, H, DV, DK), ref0, "float16")
+    print(f"RELAY dh0 rel={max_abs0:.3e} verdict={'PASS' if passed0 else 'FAIL'} ratio={ratio0:.4f}")
+    ok &= passed0
+    print("RELAY-DONE all=%s" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
 def main():
     # 单 chunk：dq/dk/dv 都可对 golden（Delta' 恒为 0）
     ok = run_case(1, 1, 64, 64, 64, 64, check_dkdv=True)
     # 多 chunk：只有 dq 不含跨 chunk 项，dk/dv 待补 dKt 后再纳入
     ok &= run_case(1, 1, 256, 64, 64, 64, check_dkdv=False)
+    # relay 初版：多 chunk 的 dk/dv/dh0
+    ok &= run_relay(1, 1, 256, 64, 64, 64)
     return 0 if ok else 1
 
 
