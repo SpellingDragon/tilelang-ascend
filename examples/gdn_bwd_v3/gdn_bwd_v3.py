@@ -411,7 +411,8 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
 
     msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     idt = torch.eye(C, dtype=torch.float32, device=dev)
-    msk_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+    msk_m2 = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+    msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
@@ -512,7 +513,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
 
     msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     idt = torch.eye(C, dtype=torch.float32, device=dev)
-    msk_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+    msk_m2 = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+    msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
     ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
