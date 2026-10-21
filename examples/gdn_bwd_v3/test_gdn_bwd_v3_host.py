@@ -38,8 +38,11 @@ from test_gdn_bwd_v2 import _case_inputs, _np_chunk_fwd, _golden_item  # noqa: E
 TOL = 1e-9
 
 
-def relay_reference(T_len=256, C=64, DK=64, DV=64):
-    """按 gdn_bwd_v3_relay 的顺序复刻全序列反向，返回六梯度（fp64）。"""
+def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None):
+    """按 gdn_bwd_v3_relay 的顺序复刻全序列反向，返回六梯度（fp64）。
+
+    dump 非 None 时，把每 chunk 的中间量 abs.max 填进 dict（用于与卡上对表）。
+    """
     NC = T_len // C
     (q, k, v, g, beta, h0, do), gold = _case_inputs(1, 1, T_len, DK, DV, "float16", "zero", False)
     Qn, Kn, Vn = q.double().numpy()[0, 0], k.double().numpy()[0, 0], v.double().numpy()[0, 0]
@@ -98,6 +101,17 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64):
         qh = Qn[sl] @ hin.T
         de = (DOn[sl] * qh).sum(1) + ca["beta"] * (Kn[sl] * t2).sum(1)
         dgam = dgam + e_vec * de
+        if dump is not None:
+            dump[f"c{c}"] = {
+                "da": float(np.abs(da).max()), "dl": float(np.abs(dl).max()),
+                "de": float(np.abs(de).max()), "dgam": float(np.abs(dgam).max()),
+                "r1": float(np.abs(t1).max()), "r2": float(np.abs(t2).max()),
+                "r3": float(np.abs((dl * gam2 * kk)).max()),
+                "q1": float(np.abs(dqkt.T @ Qn[sl]).max()),
+                "q2": float(np.abs((ca["beta"] * e_vec)[:, None] * t2).max()),
+                "q3": float(np.abs(th[:, None] * dkt).max()),
+                "q4": float(np.abs((dx + dx.T) @ Kn[sl]).max()),
+            }
         dg[sl] = np.cumsum(dgam[::-1])[::-1] + carry
         carry += dgam.sum()
         # B15: 传给更早的 chunk
@@ -115,6 +129,12 @@ def _rel(a, b):
 
 
 def main():
+    if "--dump" in sys.argv:
+        import json
+        d: dict = {}
+        relay_reference(dump=d)
+        print(json.dumps(d, indent=1))
+        return 0
     got, ref = relay_reference()
     worst = 0.0
     for name in ("dq", "dk", "dv", "dbeta", "dg", "dh0"):
