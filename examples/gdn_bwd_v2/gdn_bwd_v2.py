@@ -822,15 +822,15 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(workspace_lcb[cid, :, :], t1_ub)  # W H^T
                     for (i, j) in T.Parallel(C, BV):
                         wh_ub[i, j] = wh_ub[i, j] + t1_ub[i, j]  # Vnew
+                    if _S2A_VN_DBG and cc == _S2A_VN_CC:
+                        # probe: Vnew as accumulated in fp32, straight into the
+                        # dKt box (zero in production). L1->UB is rejected
+                        # (copy_ub_to_ub wants both operands in UB), so read the
+                        # accumulator the write-back itself uses.
+                        T.copy(wh_ub, WS_DKT[b, h, cc * C, bv * BV])
                     T.copy(wh_ub, io_bq)
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], vnew_l1)
-                    if _S2A_VN_DBG and cc == _S2A_VN_CC:
-                        # probe: this chunk/bv's Vnew, out through the dKt box
-                        # (zero in production). io_cc is idle between the P
-                        # section and B11.
-                        T.copy(vnew_l1, io_cc)
-                        T.copy(io_cc, WS_DKT[b, h, cc * C, bv * BV])
                     # ---- B5a half-loop: QH = sum_hh Q_hh H_in_hh^T (init=(hh==0) clear) ----
                     for hh in T.serial(bk_num):
                         T.copy(Q[b, h, cc * C, hh * BK], q_l1)
