@@ -656,7 +656,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_ta_cc = gdn_v3_ta(B, H, C, C, C)     # A^T da
     k_tb_cc = gdn_v3_tb(B, H, C, C, C)     # (A^T da) A^T
     k_rawk = gdn_v3_raw(B, H, C, DK)       # KKt = K K^T（同一形态）
-    k_ab_cc = gdn_v3_ab(B, H, C, C)        # (dx + dx^T) K
+    k_ab_cc = gdn_v3_ab(B, H, C, C)
+    k_ab_dv = gdn_v3_ab(B, H, C, DV)        # (dx + dx^T) K
     msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     k_mul = gdn_v3_mul(B, H, C, DK)
     k_mulv = gdn_v3_mul(B, H, C, DV)
@@ -735,10 +736,18 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         nxt_delta = (cache[c + 1]["delta_next"] if c < NC - 1
                      else torch.zeros(B, H, DV, DK, dtype=dt, device=dev))
-        dkt = k_mm(d["vnew"], nxt_delta) if c < NC - 1 else torch.zeros_like(dk[:, :, sl, :])
-        _q3 = (d["th"] * dkt.float()).to(dt)
+        # H1：DV==C 时 A@X 与 A@[C,N] 同义，优先用已验证的 ab（mm 从未单独验过）
+        if c >= NC - 1:
+            dkt = torch.zeros_like(dk[:, :, sl, :])
+        elif DV == C:
+            dkt = k_ab_dv(d["vnew"], nxt_delta)
+        else:
+            dkt = k_mm(d["vnew"], nxt_delta)
+        # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
+        _th4 = d["th"].float().unsqueeze(-1).expand(-1, -1, -1, DK)
+        _q3 = (_th4 * dkt.float()).to(dt)
         print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
-        dk[:, :, sl, :] = _dk1 + _q3
+        _dk_acc = _dk1 + _q3
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
@@ -749,7 +758,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
         _q2 = k_scale(t2n, neg_be)
         print(f"RELAYQ c={c} q2={_q2.abs().max():.4e}", flush=True)
-        dk[:, :, sl, :] = dk[:, :, sl, :] + _q2
+        _dk_acc = _dk_acc + _q2
         # ---- 以下按 golden 的 B7/B8/B11/B12/B10/B13/B9 顺序组装 ----
         gam2 = d["Gamc"].float()
         Ec = d["Ec"]
@@ -764,7 +773,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dxs = (dx + dx.transpose(-1, -2)).to(dt)
         _q4 = k_ab_cc(dxs, d["Kc"])
         print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
-        dk[:, :, sl, :] = dk[:, :, sl, :] + _q4
+        dk[:, :, sl, :] = _dk_acc + _q4        # 一次写，避免三轮读-改-写
         kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
         r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
         print(f"RELAYDBG c={c} |r3|={r3.abs().max():.3e}", flush=True)
