@@ -765,7 +765,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
         print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
-        _dk_acc = _dk1 + _q3
+        # 四项各自是 fp16 kernel 的输出；累加放在 fp32，最后一次性 cast，
+        # 避免 3 次 fp16 加法（每次 ulp≈4e-3）把 dk 的误差推到 1e-2 量级
+        _dk_acc = _dk1.float() + _q3.float()
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
@@ -776,7 +778,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
         _q2 = k_scale(t2n, neg_be)
         print(f"RELAYQ c={c} q2={_q2.abs().max():.4e}", flush=True)
-        _dk_acc = _dk_acc + _q2
+        _dk_acc = _dk_acc + _q2.float()
         # ---- 以下按 golden 的 B7/B8/B11/B12/B10/B13/B9 顺序组装 ----
         gam2 = d["Gamc"].float()
         Ec = d["Ec"]
@@ -791,7 +793,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dxs = (dx + dx.transpose(-1, -2)).to(dt)
         _q4 = k_ab_cc(dxs, d["Kc"])
         print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
-        _dk_full = _dk_acc + _q4
+        _dk_full = (_dk_acc + _q4.float()).to(dt)
         if _oneshot:
             dk_buf.append(_dk_full)             # 收集，循环后一次 cat 写回
         else:
