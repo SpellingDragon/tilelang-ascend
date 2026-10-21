@@ -24,7 +24,7 @@ from gdn_bwd_v2 import (  # noqa: E402
     gdn_bwd_v2_solve_a,
 )
 
-B, H, T, DK, DV, C, BK = 1, 16, 8192, 128, 128, 64, 64
+B, H, T, DK, DV, C, BK, BV = 1, 16, 8192, 128, 128, 64, 64, 64
 dt = torch.float16
 dev = "npu"
 

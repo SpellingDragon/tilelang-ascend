@@ -578,7 +578,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             # B operand of B6b (dVnew^T (-W)), and one L1 lane cannot carry both
             # layouts: using it as A for Wterm silently contributed nothing
             # (Vnew == U0 to 4e-3 while Wterm should be 1.0e-1, notes [71]).
-            w_a_l1 = [T.alloc_L1([C, BK], dtype) for _ in range(bk_num)]
+            w_a_l1 = T.alloc_L1([bk_num, C, BK], dtype)  # A-only lane (B6b keeps w_full_l1 as B)
             hin_l1 = T.alloc_L1([BV, BK], dtype)  # H_in half (B5a/B5b/B6)
             dhp_l1 = T.alloc_L1([BV, BK], dtype)  # Delta' half (B1)
             bq_l1 = T.alloc_L1([C, BV], dtype)  # dO (B1/B2)
@@ -696,7 +696,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # S7g: single read-back keeps every half alive in L1 for the
                     # two later GEMM consumers (workspace_w stays strict 1W1R)
                     T.copy(workspace_w[cid, 0, hh * BK], w_full_l1[hh, :, :])  # #1198: no ':' before a scalar offset
-                    T.copy(workspace_w[cid, 0, hh * BK], w_a_l1[hh])  # #1198 form
+                    T.copy(workspace_w[cid, 0, hh * BK], w_a_l1[hh, :, :])  # #1198 form
                 # ---- raw QK^T -> workspace_lcc stash (B3 read-before-clobber)
                 #      P = (raw .* Gam) .* M -> p_l1 (S7e :640-646 order) ----
                 for hh in T.serial(bk_num):
@@ -827,9 +827,9 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # ---- W H^T half sum -> Vnew = U0 + (-W) H^T (S7e :685-689);
                     #      L0C box clears via init=(hh==0) only (fill on L0C is
                     #      illegal: tl.ascend_fill mixes Cube/Vector, S7f erratum)
-                    for hh in range(bk_num):  # python range: w_a_l1 is a list
+                    for hh in T.serial(bk_num):
                         T.copy(WS_H[b, h, cc, bv * BV, hh * BK], hin_l1)  # H_in reload (GM->L1 direct)
-                        T.gemm_v0(w_a_l1[hh], hin_l1, u0_l0, transpose_B=True, init=False)
+                        T.gemm_v0(w_a_l1[hh, :, :], hin_l1, u0_l0, transpose_B=True, init=False)
                     T.copy(u0_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], wh_ub)  # Vnew = U0 + W H^T
                     if _S2A_VN_DBG and cc == _S2A_VN_CC:
