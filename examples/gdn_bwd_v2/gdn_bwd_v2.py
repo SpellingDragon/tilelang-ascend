@@ -514,7 +514,7 @@ def gdn_bwd_v2_scan1(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="f
 #    consumer now share one kernel).
 # ---------------------------------------------------------------------------
 @tilelang.jit(out_idx=[11, 12, 13, 14, 15, 16, 17, 18, 19],
-              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31],
+              workspace_idx=[10, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32],
               pass_configs=pass_configs)
 def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
@@ -560,6 +560,10 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
         # and DQ came out all zeros (w11 diag; see notes [45]).
         workspace_dq1: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-1 staging
         workspace_dq0: T.Tensor([B * H, C, C], accum_dtype),  # type: ignore  dQ half-0 staging
+        # A-only staging for the Vnew GEMM. workspace_w must keep one vec write
+        # against one cube read (cv-sync pairs per buffer, #1019), so the second
+        # cube consumer needs its own lane.
+        workspace_wa: T.Tensor([B * H, C, DK], accum_dtype),  # type: ignore  -W halves (A operand)
     ):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
@@ -693,10 +697,11 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                         xk_ub[i, j] = 0.0 - xk_ub[i, j]  # -W half
                     T.copy(xk_ub, io_xk)
                     T.copy(io_xk, workspace_w[cid, :, hh * BK])
-                    # S7g: single read-back keeps every half alive in L1 for the
-                    # two later GEMM consumers (workspace_w stays strict 1W1R)
+                    T.copy(io_xk, workspace_wa[cid, :, hh * BK])
+                    # one write and one read per lane: workspace_w feeds the B
+                    # operand (w_full_l1), workspace_wa feeds the A operand
                     T.copy(workspace_w[cid, 0, hh * BK], w_full_l1[hh, :, :])  # #1198: no ':' before a scalar offset
-                    T.copy(workspace_w[cid, 0, hh * BK], w_a_l1[hh, :, :])  # #1198 form
+                    T.copy(workspace_wa[cid, 0, hh * BK], w_a_l1[hh, :, :])  # #1198 form
                 # ---- raw QK^T -> workspace_lcc stash (B3 read-before-clobber)
                 #      P = (raw .* Gam) .* M -> p_l1 (S7e :640-646 order) ----
                 for hh in T.serial(bk_num):
