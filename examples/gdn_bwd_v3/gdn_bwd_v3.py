@@ -392,8 +392,8 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         wh = k_wh(wm, Hc)                            # W H^T
         vnew = k_sub(u0, wh)                         # Vnew
 
-        raw = k_raw(Qc, Kc)
-        _P = k_gate(raw, Gamc, msk_m)                # P（dqkt 复用同一 gate）
+        # raw/P 只在 relay 的 `P^T dO` 里需要（B1）；当前的 dq 链用不到，
+        # 先跳过以免每次 launch 白算一次 [C,C] 的 gate。
         dP = k_dp(DOc, vnew)
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc)
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
