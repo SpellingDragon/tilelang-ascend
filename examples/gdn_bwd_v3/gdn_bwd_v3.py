@@ -601,7 +601,8 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     return dq, dk, dv
 
 
-def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64, hs_override=None):
+def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
+                     hs_override=None, a_override=None):
     """完整反向：先正向缓存 vnew，再反向扫 Delta'，输出 (dq, dk, dv, dh0)。
 
     依据 `_np_chunk_bwd` 的 B1-B10（见 notes [91]）：
@@ -706,7 +707,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64, hs_override=None):
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
         Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
-        Ac, Gc = ws_a[:, :, sl, :], ws_g[:, :, sl]
+        Ac = ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]
+        Gc = ws_g[:, :, sl]
         Ec = torch.exp(Gc)
         Hc = ws_h[:, :, c, :, :] if hs_override is None else hs_override[:, :, c]
         Betac, Gamc = beta[:, :, sl], ws_gam[:, :, c, :, :]

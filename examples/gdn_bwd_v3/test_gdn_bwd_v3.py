@@ -81,9 +81,16 @@ def run_relay(B, H, T_len, DK, DV, C):
             np.stack([np.asarray(_cache[i]["hin"], np.float64) for i in range(T_len // C)])
             .astype(np.float16))[None, None].to(dev)
         print(f"RELAYH T={T_len} 用 golden H_in（替换 scan1 的输出）", flush=True)
+        _as = torch.from_numpy(
+            np.stack([np.asarray(_cache[i]["a_mat"], np.float64) for i in range(T_len // C)])
+            .astype(np.float16))[None, None].to(dev)
+        print(f"RELAYA T={T_len} 用 golden A（替换 solve_a 的输出）", flush=True)
+    else:
+        _as = None
     _out = gdn_bwd_v3_relay(
         q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
-        beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C, hs_override=_hs)
+        beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C,
+        hs_override=_hs, a_override=_as)
     dq, dk, dv, dbeta, dg, dh0 = _out[:6]
     if len(_out) == 7:      # GDN_V3_DK_SPLIT=1：把四项各自与 golden 比
         for k, v_part in _out[6].items():
