@@ -866,12 +866,16 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                             T.gemm_v0(bq_l1, hin_l1, dw0_l0, init=(bv == 0))
                         else:
                             T.gemm_v0(bq_l1, hin_l1, dw1_l0, init=(bv == 0))
-                    # ---- B6b half-loop: dH_hh += Vnew^T (-W_hh) ----
+                    # ---- B6b half-loop: dH_hh += dVnew^T (-W_hh) ----
+                    # The chain rule gives (-W)^T dVnew, i.e. dVnew^T (-W) with
+                    # the neg folded into w_full. Using Vnew here (the forward
+                    # state) instead of dVnew was the whole DH0 error: CPU
+                    # golden matches dVnew at 1.5e-5 and Vnew at 4.3e-1.
                     for hh in T.serial(bk_num):
                         if hh == 0:
-                            T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh0_l0, transpose_A=True, init=False)
+                            T.gemm_v0(bq_l1, w_full_l1[hh, :, :], dh0_l0, transpose_A=True, init=False)
                         else:
-                            T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
+                            T.gemm_v0(bq_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
                     # ---- B15: dH half -> WS_D relay (dh0 for the first chunk);
                     #      B9 vec part: dH += exp(gam_{n-1}) Delta' ----
                     # D13: python range (compile-time unroll) instead of T.serial.
@@ -1062,6 +1066,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             xk_l1 = T.alloc_L1([C, BK], dtype)  # dW half / K.*X product lane
             bek_l1 = T.alloc_L1([C, BK], dtype)  # bee .* K half (B8)
             bq_l1 = T.alloc_L1([C, BV], dtype)  # dVnew (B7 dA GEMM input)
+            dv_b_l1 = T.alloc_L1([C, BV], dtype)  # dVnew as the B operand of t1 = A^T dVnew
             bv_l1 = T.alloc_L1([C, BV], dtype)  # beta .* V (B7 dA GEMM input)
             t1_l1 = T.alloc_L1([C, BV], dtype)  # V .* t1 rowsum source (B7)
             onesdv_l1 = T.alloc_L1([BV, 16], dtype)
@@ -1169,6 +1174,10 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # because io_bq2 is reused by the V/beta loads in the same
                     # block -- the read must be probed, not rerouted.
                     T.copy(WS_DV[b, h, cc * C, bv * BV], bq_l1)
+                    # A and B operands need different L1 layouts: bq_l1 feeds the
+                    # dA GEMM as A, so t1 = A^T dVnew must not reuse it as B (that
+                    # read landed 3.6x off but finite, notes [58]).
+                    T.copy(WS_DV[b, h, cc * C, bv * BV], dv_b_l1)
                     # beta .* V -> bv_l1
                     T.tile.fill(wh2_ub, 0.0)
                     T.copy(V[b, h, cc * C, bv * BV], io_bq2)
@@ -1185,7 +1194,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_bq2, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bv_l1)
                     # t1 = A^T dVnew
-                    T.gemm_v0(a_l1, bq_l1, t1_l0, transpose_A=True, init=True)
+                    T.gemm_v0(a_l1, dv_b_l1, t1_l0, transpose_A=True, init=True)
                     T.copy(t1_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1b_ub)  # t1 block
                     # dbeta += rowsum(V .* t1) (S7e :761-772)
