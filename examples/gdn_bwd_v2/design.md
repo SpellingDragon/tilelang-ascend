@@ -445,5 +445,5 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 | 编号 | 归属 | 载体 |
 |---|---|---|
 | D1–D4、D7 | **平台/后端** | `release/ascend/port910b/ta_defect_dossier.md`（对外素材） |
-| D8、D13、D15、D16、D17 | **本算子**（算侧可修） | 本文件 §18 与本 run notes；D17 = A/Aᵀ 同 lane（待专用 lane 修） |
+| D8、D13、D15、D16、D17、D20 | **本算子**（算侧可修） | 本文件 §18 与本 run notes；D17 = A/Aᵀ 同 lane（待专用 lane 修）；D20 = 同一 GM lane 在一轮内两次 W-R，cv-sync 只建第一对 |
 | D9–D12、D14 | 已证伪/被取代的中间假设 | run notes（保留不改写） |
