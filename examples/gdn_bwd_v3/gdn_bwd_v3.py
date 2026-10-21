@@ -83,7 +83,7 @@ def gdn_v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
     @T.prim_func
     def main(A: T.Tensor([B, H, C, C], dtype), BV: T.Tensor([B, H, C, DV], dtype),  # type: ignore
              WN: T.Tensor([B, H, C, DK], dtype), Hh: T.Tensor([B, H, DV, DK], dtype),  # type: ignore
-             VN: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
+             VN: T.Tensor([B, H, C, DV], accum)):  # type: ignore  fp32：下游 hi/lo 拆分的源
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
@@ -588,15 +588,18 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         # -W 的构造：A @ (-(beta E) K) = -W，于是 Vnew 可以在一个 L0C 里累加出来
         bek_n = k_scale(Kc, -Betac * Ec); _step("sbe")
         wm_n = k_ab_k(Ac, bek_n); _step("ab_k")      # -W
-        vnew = k_vnew(Ac, bv, wm_n, Hc); _step("vnew")
+        vnew32 = k_vnew(Ac, bv, wm_n, Hc); _step("vnew")
+        # vnew 以 fp32 落 GM；两个消费点各用 hi/lo 两次 GEMM（[108]）
+        v_hi = vnew32.to(dt)
+        v_lo = (vnew32 - v_hi.float()).to(dt)
 
         # raw/P 只在 relay 的 `P^T dO` 里需要（B1）；当前的 dq 链用不到，
         # 先跳过以免每次 launch 白算一次 [C,C] 的 gate。
-        dP = k_dp(DOc, vnew); _step("dp")
+        dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc); _step("dq")
         dk[:, :, sl, :] = k_dk(dqkt, Qc); _step("dk")
-        dv[:, :, sl, :] = k_scale(k_dv(Ac, vnew), Betac); _step("dv")
+        dv[:, :, sl, :] = k_scale(k_dv(Ac, v_hi), Betac); _step("dv")
     torch.npu.synchronize()
     return dq, dk, dv
 
@@ -716,14 +719,16 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
         bek_n = k_scale(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它
         wm_n = k_ab_k(Ac, bek_n)              # -W
-        vnew = k_vnew(Ac, bv, wm_n, Hc)
+        vnew32 = k_vnew(Ac, bv, wm_n, Hc)
+        v_hi = vnew32.to(dt)
+        v_lo = (vnew32 - v_hi.float()).to(dt)
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
-        dP = k_dp(DOc, vnew); _step("dp")
+        dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
-                          Betac=Betac, vnew=vnew, wm_n=wm_n, bv=bv, bek_n=bek_n, Gamc=Gamc,
+                          Betac=Betac, v_hi=v_hi, v_lo=v_lo, wm_n=wm_n, bv=bv, bek_n=bek_n, Gamc=Gamc,
                           P=_P, dqkt=dqkt, edo=edo, dP=dP, raw=raw,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
@@ -764,9 +769,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         if c >= NC - 1:
             dkt = torch.zeros_like(dk[:, :, sl, :])
         elif DV == C:
-            dkt = k_ab_dv(d["vnew"], nxt_delta)
+            dkt = k_ab_dv(d["v_hi"], nxt_delta) + k_ab_dv(d["v_lo"], nxt_delta)
         else:
-            dkt = k_mm(d["vnew"], nxt_delta)
+            dkt = k_mm(d["v_hi"], nxt_delta) + k_mm(d["v_lo"], nxt_delta)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
