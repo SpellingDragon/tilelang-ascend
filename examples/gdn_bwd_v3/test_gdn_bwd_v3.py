@@ -97,6 +97,8 @@ def main():
     # 多 chunk：只有 dq 不含跨 chunk 项，dk/dv 待补 dKt 后再纳入
     ok &= run_case(1, 1, 256, 64, 64, 64, check_dkdv=False)
     # relay：无条件跑（它才是 dk/dv/dbeta 的 gate）
+    # 单 chunk 先跑：它没有 scan1 的 128 步递推，用来分离"前置累积"与"本层精度"
+    ok &= run_relay(1, 1, 64, 64, 64, 64)
     ok &= run_relay(1, 1, 256, 64, 64, 64)
     return 0 if ok else 1
 
