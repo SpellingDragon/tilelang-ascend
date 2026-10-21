@@ -640,16 +640,16 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         Ec = torch.exp(Gc)
         Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
-        bek = k_scale(Kc, Betac * Ec)
-        wm = k_ab_k(Ac, bek)                 # +W（relay 在这里需要正号）
-        vnew = k_vnew(Ac, bv, k_ab_k(Ac, k_scale(Kc, -Betac * Ec)), Hc)
+        # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
+        wm_n = k_ab_k(Ac, k_scale(Kc, -Betac * Ec))
+        vnew = k_vnew(Ac, bv, wm_n, Hc)
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
         dP = k_dp(DOc, vnew); _step("dp")
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
-                          Betac=Betac, vnew=vnew, wm=wm, P=_P, dqkt=dqkt, edo=edo,
+                          Betac=Betac, vnew=vnew, wm_n=wm_n, P=_P, dqkt=dqkt, edo=edo,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
     torch.npu.synchronize()
@@ -668,8 +668,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
             dvnew = base + k_tb_kt(d["Kc"], delta)   # Kt [C,DK] x Delta' [DV,DK]^T (per-bh)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
-        tw = k_ta_dvn(dvnew, d["wm"])
-        nxt = tq.float() - tw.float()
+        tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
+        nxt = tq.float() + tw_n.float()              # e_do^T Q - dvnew^T W
         if delta is not None:
             nxt = nxt + d["glast"][:, :, None, None] * delta.float()
         delta = nxt.to(dt)
