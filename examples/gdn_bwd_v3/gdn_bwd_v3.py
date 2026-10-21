@@ -729,11 +729,16 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if delta is not None:
             nxt = nxt + d["glast"][:, :, None, None] * delta.float()
         delta = nxt.to(dt)
+        # 四项各自打印 abs.max，与本地基线对表（3.8~6.3 / 0.13~0.33 / 0~2.5 / 0.38~0.44）
+        _dk1 = k_dk(d["dqkt"], d["Qc"])
+        print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         nxt_delta = (cache[c + 1]["delta_next"] if c < NC - 1
                      else torch.zeros(B, H, DV, DK, dtype=dt, device=dev))
         dkt = k_mm(d["vnew"], nxt_delta) if c < NC - 1 else torch.zeros_like(dk[:, :, sl, :])
-        dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
+        _q3 = (d["th"] * dkt.float()).to(dt)
+        print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
+        dk[:, :, sl, :] = _dk1 + _q3
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
@@ -742,7 +747,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dw = k_mm(dvnew, d["Hc"])                       # [B,H,C,DK]
         t2n = k_ta_cdk(d["Ac"], dw)                     # A^T dw（含负号）
         neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
-        dk[:, :, sl, :] = dk[:, :, sl, :] + k_scale(t2n, neg_be)
+        _q2 = k_scale(t2n, neg_be)
+        print(f"RELAYQ c={c} q2={_q2.abs().max():.4e}", flush=True)
+        dk[:, :, sl, :] = dk[:, :, sl, :] + _q2
         # ---- 以下按 golden 的 B7/B8/B11/B12/B10/B13/B9 顺序组装 ----
         gam2 = d["Gamc"].float()
         Ec = d["Ec"]
@@ -755,7 +762,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dl = msk_j[None, None] * (-o_)                             # [B,H,C,C] fp32
         dx = dl * d["Betac"][:, :, :, None] * gam2
         dxs = (dx + dx.transpose(-1, -2)).to(dt)
-        dk[:, :, sl, :] = dk[:, :, sl, :] + k_ab_cc(dxs, d["Kc"])
+        _q4 = k_ab_cc(dxs, d["Kc"])
+        print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
+        dk[:, :, sl, :] = dk[:, :, sl, :] + _q4
         kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
         r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
         dbeta[:, :, sl] = r1 - Ec * r2 + r3                        # B7 + B8 + B11
