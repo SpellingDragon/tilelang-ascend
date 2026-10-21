@@ -121,7 +121,8 @@ def run(tag, args):
         # the probe overwrote WS_DKT (scan2a out4) with the Vnew of chunk
         # GDN_S2A_VN_CC; compare it with the fp64 replay of the same chunk.
         _vcc = int(os.environ.get("GDN_S2A_VN_CC", "0"))
-        _vc = _np.asarray(outs_a[4].float().cpu().numpy()[0, 0], _np.float64)
+        _vc = _np.asarray(outs_a[4].float().cpu().numpy()[0, 0]
+                          [_vcc * C:(_vcc + 1) * C], _np.float64)
         _vg = _np.asarray(_cache[_vcc]["vnew"], _np.float64)
         _dd = float(_np.abs(_vc - _vg).max())
         print(f"VN cc={_vcc} maxdiff={_dd:.3e} goldmax={float(_np.abs(_vg).max()):.3e} "
