@@ -417,6 +417,9 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 | C3 | **L0C→GM 的 `realTailN` 在切片含标量尾索引时退化为 1**（只搬 1 列） | `copy_l0c_to_gm(..., 64, 64, 1, 0)`；改 4-D `[B*H,bk_num,C,BK]` + 前置索引后为 64（notes [31]/[46]） | 半块交接必须用**前置标量索引**的全 2-D 切片 |
 | C4 | **预算悬崖**：910B L0C 128 KiB、UB 191.75 KiB；scan1 静态 209.5 KiB（109%）、scan2a 91% | `codegen_ascend.cc` 常量 + `_s7f_ub_budget.py` | 任何新增 alloc 都可能改变 liveness/spill；**改布局必须单点+对照** |
 | C5 | **未初始化读会直接变成 box 垃圾**：auto workspace 由 runtime `empty` 分配 | Δ′ 首块、dKt 未实现 → DKT 3.8e30、DGAM 3.2e17（notes [47]） | 首块/未实现项必须显式置 0 |
+| C6 | **fp32 UB→GM 直写被 bisheng 拒绝**（`T.copy(fp32_ub, fp16_gm)` 编译失败，无具体诊断） | 修 WS_DV 写回时逐字复现（`RuntimeError: Compilation Failed` + bisheng 全参） | fp32→fp16 出界必须经 **fp16 UB 中转**，不能省 |
+| C7 | **一轮内被多次写的 GM 中转 lane，其首次 AIV 读会与 AIC 写竞争** | `lcb` 每轮写三次（dvnew/u0/qh），WS_DV 写回读到全 0；改用 L0C→UB 直拷后 6.785e-04（notes [56]/[57]） | 跨核交接优先 **L0C→UB 直拷**（dq1_l0 先例）；必须走 GM 时用一次性 lane |
+| C8 | **共享 UB 中转会把别人的 nan 带进来** | scan2b 的 dVnew 读改经 `io_bq2`（同段被 V/beta 装载复用）⇒ nan 复发（notes [58]） | 中转 lane 必须**专用**；`io_bq/io_bq2/io_cc/t1_ub` 在混合核内均为多写者 |
 
 ### 18.2 未实现项（当前按 0 处理，不得默认其正确）
 
@@ -432,3 +435,13 @@ fp32 `atol=2⁻¹⁶, rtol=2⁻¹⁰, max_abs=1e-2, ratio=0.99`；`adjoint` 锚 
 | 列广播算侧绕行 | 双 `T.serial`、`[1,C]`+`T.tile.broadcast`、`2D 源列索引`、`退化+transpose`、GM 行→broadcast、四槽拆分 | 全部 507014/507015 或回归；**唯一可行：向量-only 核产出** |
 | 去别名（拆专用缓冲） | `ldk` 四槽、`vcb` 三拆、`dvnew` 专用 | 三次全部回归（dv 0.485→nan）；别名是表象，真因是 C1/C4 |
 | 常数输入验证 | solve_a/scan1 只用 g≡0 | 使 C2 潜伏七个窗口 |
+| 共享 lane 中转 | `io_bq`（dVnew 写回）、`io_bq2`（scan2b 的 dVnew 读） | 前者全 0、后者 nan；**中转必须专用** |
+| 替换算子后残留旧算子 | plan-10c 把列广播换成 GM 读 GAM，但保留了下方的 `T.exp` | Gamma 被 exp 两次 → 上三角 inf → NaN（D16）；**替换时必须同 commit 删除被替代的表达式** |
+
+### 18.4 缺陷编号归属（防混淆）
+
+| 编号 | 归属 | 载体 |
+|---|---|---|
+| D1–D4、D7 | **平台/后端** | `release/ascend/port910b/ta_defect_dossier.md`（对外素材） |
+| D8、D13、D15、D16 | **本算子**（算侧可修） | 本文件 §18 与本 run notes |
+| D9–D12、D14 | 已证伪/被取代的中间假设 | run notes（保留不改写） |
