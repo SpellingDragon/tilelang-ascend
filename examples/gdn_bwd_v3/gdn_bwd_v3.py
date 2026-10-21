@@ -538,8 +538,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     `dq` 与 relay 无关（`dqkt K + e_do H_in`），直接沿用第一遍。
 
     **状态：初版，尚未上卡验证。** 已知的简化假设：
-      * `dbeta` / `dg` 尚未输出（它们依赖 t1/t2 的 rowsum，形态已由 dbeta/rows 验证）
-      * `th` 用 `exp(G_last - G)` 逐 token 展开；`dk` 的 `(beta E) .* t2` 项尚未并入
+      * `dbeta` 已接入（`rowsum(V*t1) + E*rowsum(K*t2)`，两项都用已验证的 rowsum 形态）
+      * `dg` 尚未接入：它还需要 `dA` 的两项与 `A^T dA A^T`（求逆的导数），共约 7 次 launch/chunk
+      * `dk` 的 `(beta E) .* t2` 已接入（符号折进 `-beta*E`）
       * `glast` 已按 (b,h) 保留，不再跨 batch 取均值
     """
     try:
