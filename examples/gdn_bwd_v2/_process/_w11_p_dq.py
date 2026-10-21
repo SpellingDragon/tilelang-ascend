@@ -82,7 +82,7 @@ def k_dp(B, H, C, DV, dtype="float16", accum="float"):
     return main
 
 
-@tilelang.jit(out_idx=[2], pass_configs=_pass)
+@tilelang.jit(out_idx=[4], pass_configs=_pass)
 def k_dq(B, H, C, DK, DV, dtype="float16", accum="float"):
     """cube: dq = dqkt K + e_do H_in (two gemms, same L0C)."""
 
