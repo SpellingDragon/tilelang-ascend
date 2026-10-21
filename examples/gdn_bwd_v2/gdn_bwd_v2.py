@@ -762,13 +762,13 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bv_l1)
                     T.gemm_v0(a_l1, bv_l1, u0_l0, init=True)
-                    # D20: the second hand-off below shares this GM lane and
-                    # cv-sync only orders the first pair, so it can race. The
-                    # L0C->UB direct fix was tried and rejected by the compiler
-                    # (workspace_2 cube/vec sync mismatch, D21), so the GM
-                    # staging stays until the pass handles it.
-                    T.copy(u0_l0, workspace_lcb[cid, :, :])
-                    T.copy(workspace_lcb[cid, :, :], wh_ub)  # wh = U0
+                    # D20: workspace_lcb carries FOUR W-R groups per iteration
+                    # (U0 / Wterm / QH / dVnew) while cv-sync builds ONE flag
+                    # pair per buffer, so three of them are unordered. Taking
+                    # U0 straight from L0C to UB removes one group; the lane
+                    # keeps two (Wterm, QH), so the cube/vec pairing the pass
+                    # checks still exists (removing both tripped it, D21).
+                    T.copy(u0_l0, wh_ub)  # wh = U0 (L0C -> UB direct)
                     # ---- B1 half-loop: dVnew = P^T dO + sum_hh Kt_hh Dhp_hh^T,
                     #      with the B9 inner product <H_in, Delta'> folded into
                     #      the same half pass (x_ub dies here; the B5/B6
