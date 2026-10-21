@@ -728,7 +728,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if delta is None:
             dvnew = base
         else:
-            dvnew = base + k_tb_kt(d["Kc"], delta)   # Kt [C,DK] x Delta' [DV,DK]^T (per-bh)
+            # golden 用的是 Kt = th .* K（B1），不是 K
+            kt_c = k_scale(d["Kc"], d["th"])              # th 已是 [B,H,C] fp32
+            dvnew = base + k_tb_kt(kt_c, delta)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
         tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
