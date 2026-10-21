@@ -75,6 +75,42 @@ def run(tag, args):
     outs_a = gdn_bwd_v2_scan2a(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
         q, k, v, do, beta, ws_g, ws_a, msk_m, ones_dv, ws_h, ws_gam)
     torch.npu.synchronize()
+    # H4: split dq per chunk into its two terms (B4 = dqkt@K, B5b = e_do@H_in)
+    # and compare the card's box against each -- the two chunk inputs are exact,
+    # so the 1-4% has to be inside one of these.
+    _dq_card = outs_a[0].float().cpu().numpy()
+    _doc = do.double().cpu().numpy()[0, 0]
+    _kc = k.double().cpu().numpy()[0, 0]
+    for _cc in range(len(_cache)):
+        _ca = _cache[_cc]
+        _sl = slice(_cc * C, (_cc + 1) * C)
+        _P = _np.asarray(_ca["p_mat"], _np.float64)
+        _G = _np.asarray(_ca["gam_2d"], _np.float64)
+        _M = _np.asarray(_ca["msk_m"], _np.float64)
+        _VN = _np.asarray(_ca["vnew"], _np.float64)
+        _DP = _doc[_sl] @ _VN.T
+        _B4 = ((_DP * _G) * _M) @ _kc[_sl]
+        _E = _np.asarray(_ca["e_vec"], _np.float64)
+        _B5 = (_E[:, None] * _doc[_sl]) @ _np.asarray(_ca["hin"], _np.float64)
+        _gold = _B4 + _B5
+        _card = _np.asarray(_dq_card[0, 0, _sl], _np.float64)
+        _gm = float(_np.abs(_gold).max()) + 1e-30
+        # H5: if the card used a neighbouring chunk's H_in, replacing hin here
+        # reproduces it exactly. chunk 0's B5 is zero (h0=zero), so a shift is
+        # invisible there and shows up only on chunks 1..3 -- as observed.
+        def _b5(_c):
+            if _c < 0 or _c >= len(_cache):
+                return None
+            _h = _np.asarray(_cache[_c]["hin"], _np.float64)
+            return (_E[:, None] * _doc[_sl]) @ _h
+        _rel = lambda x: float(_np.abs(_card - x).max()) / _gm
+        _prev, _next = _b5(_cc - 1), _b5(_cc + 1)
+        _sp = f"{_rel(_prev):.3e}" if _prev is not None else "-"
+        _sn = f"{_rel(_next):.3e}" if _next is not None else "-"
+        print(f"DQSPLIT cc={_cc} card_vs_gold={_rel(_gold):.3e} "
+              f"card_vs_B4={_rel(_B4):.3e} card_vs_B5={_rel(_B5):.3e} "
+              f"card_vs_prevH={_sp} card_vs_nextH={_sn} "
+              f"B4max={float(_np.abs(_B4).max()):.3e} B5max={float(_np.abs(_B5).max()):.3e}")
     for i, o in enumerate(outs_a):
         stat(f"s2a_out{i}", o)
     outs_b = gdn_bwd_v2_scan2b(B, H, T_len, DK, DV, C, BV, BK, dtype=dtype)(
