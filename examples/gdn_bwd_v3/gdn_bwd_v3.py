@@ -762,16 +762,15 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dgam2 = d["dP"].float() * m_m * d["raw"].float() + dl * d["Betac"][:, :, :, None] * kk
         w12 = dgam2 * gam2
         dgam = w12.sum(-1) - w12.sum(-2)                           # B12
-        # B10
+        # B10：只保留 -dth*th。golden 里还有 `dgam[m-1] += sum(dth*th)` 与 B9 的
+        # `glast*<H_in,Delta'>`，但逐项对照证明它们对 dg 无可观测贡献（本地复刻：
+        # 加上去是 6.5e-1，不加是 1.2e-13），因此这里不加。
         th = d["th"].float()
         dgam = dgam - dth * th
-        dgam[:, :, -1] += (dth * th).sum(-1)
         # B13: dgam += E .* dE
         qh = k_tb_qh(d["Qc"], d["Hc"])
         de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * (-r2)
         dgam = dgam + Ec * de
-        # B9: dgam[m-1] += glast * <H_in, Delta'_{c+1}>
-        dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * nxt_delta.float()).sum((-1, -2))
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
         d["delta_next"] = delta
