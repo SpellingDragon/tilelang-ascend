@@ -27,9 +27,8 @@ from test_gdn_bwd_v2 import _case_inputs, _golden_item, check_precision  # noqa:
 from gdn_bwd_v3 import gdn_bwd_v3  # noqa: E402
 
 
-def main():
+def run_case(B, H, T_len, DK, DV, C, check_dkdv):
     torch.manual_seed(7)
-    B, H, T_len, DK, DV, C = 1, 1, 64, 64, 64, 64
     dtype = "float16"
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, dtype, "zero", False)
 
@@ -42,12 +41,21 @@ def main():
 
     got = {"dq": dq.cpu().float(), "dk": dk.cpu().float(), "dv": dv.cpu().float()}
     ok = True
-    for item in ("dq", "dk", "dv"):
+    items = ("dq", "dk", "dv") if check_dkdv else ("dq",)
+    for item in items:
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
         passed, ratio, max_abs = check_precision(got[item], ref, dtype)
         print(f"V3 {item} rel= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
         ok &= passed
     print("V3-DONE all=%s" % ("PASS" if ok else "FAIL"))
+    return ok
+
+
+def main():
+    # 单 chunk：dq/dk/dv 都可对 golden（Delta' 恒为 0）
+    ok = run_case(1, 1, 64, 64, 64, 64, check_dkdv=True)
+    # 多 chunk：只有 dq 不含跨 chunk 项，dk/dv 待补 dKt 后再纳入
+    ok &= run_case(1, 1, 256, 64, 64, 64, check_dkdv=False)
     return 0 if ok else 1
 
 
