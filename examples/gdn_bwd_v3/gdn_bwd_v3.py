@@ -509,6 +509,16 @@ def gdn_v3_rowsum(B, H, C, N, dtype="float16", accum="float"):
 
 
 # ---------------------------- host：chunk 循环（D23） ----------------------------
+def _bcast_last(x, n):
+    """把 [B,H,C] 显式扩成 [B,H,C,n]。
+
+    D28：卡上 `x[B,H,C] * y[B,H,C,n]` 这样的跨 rank 广播会按行退化（每行用同一标量），
+    dk 因此差 2.529。显式 expand 后降到 1.3e-2。**任何逐元素运算都先过这个函数。**
+    """
+    return x.unsqueeze(-1).expand(-1, -1, -1, n)
+
+
+
 def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     """返回 (dq, dk, dv)。前置 S/A/H 复用 v2 的三件（均已真机验证）。"""
     # 卡上是扁平的 /tmp 布局，仓内是包路径；两条都试，避免部署形态差异
@@ -752,7 +762,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         else:
             dkt = k_mm(d["vnew"], nxt_delta)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
-        _th4 = d["th"].float().unsqueeze(-1).expand(-1, -1, -1, DK)
+        _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
         print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
         _dk_acc = _dk1 + _q3
