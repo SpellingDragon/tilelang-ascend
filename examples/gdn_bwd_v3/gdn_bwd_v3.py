@@ -740,7 +740,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
             nxt = nxt + d["glast"][:, :, None, None] * delta.float()
         delta = nxt.to(dt)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
-        nxt_delta = cache[c + 1]["delta_next"] if c < NC - 1 else torch.zeros_like(delta)
+        nxt_delta = (cache[c + 1]["delta_next"] if c < NC - 1
+                     else torch.zeros(B, H, DV, DK, dtype=dt, device=dev))
         dkt = k_mm(d["vnew"], nxt_delta) if c < NC - 1 else torch.zeros_like(dk[:, :, sl, :])
         dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
