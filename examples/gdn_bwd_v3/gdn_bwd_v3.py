@@ -419,6 +419,49 @@ def gdn_v3_tb(B, H, C, M, N, dtype="float16", accum="float"):
 
     return main
 
+@tilelang.jit(out_idx=[3], pass_configs=_PASS)
+def gdn_v3_colsum(B, H, C, N, dtype="float16", accum="float"):
+    """列和：ones(16,C) @ X -> [16,N]，第 0 行即 colsum(X)。"""
+
+    @T.prim_func
+    def main(Ones: T.Tensor([16, C], dtype), X: T.Tensor([B, H, C, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, 16, N], accum)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            ones_l1 = T.alloc_L1([16, C], dtype)
+            x_l1 = T.alloc_L1([C, N], dtype)
+            o_l0 = T.alloc_L0C([16, N], accum)
+            T.copy(Ones[0, 0], ones_l1)
+            T.copy(X[b, h, 0, 0], x_l1)
+            T.gemm_v0(ones_l1, x_l1, o_l0, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
+
+    return main
+
+
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_suffix(B, H, C, dtype="float16", accum="float"):
+    """dg[i] = carry + sum_{r>=i} dgam[r]  （纯 vec，与 cumsum 同族）"""
+
+    @T.prim_func
+    def main(DG: T.Tensor([B, H, C], "float"), Carry: T.Tensor([B, H], "float"),  # type: ignore
+             O: T.Tensor([B, H, C], "float")):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            s = T.alloc_ub([C], accum)
+            c0 = T.alloc_ub([1], accum)
+            T.copy(DG[b, h, 0], s)
+            T.copy(Carry[b, h], c0)
+            for i in T.serial(C):
+                c0[0] = c0[0] + s[C - 1 - i]
+                s[C - 1 - i] = c0[0]
+            T.copy(s, O[b, h, 0])
+
+    return main
+
+
 @tilelang.jit(out_idx=[2], pass_configs=_PASS)
 def gdn_v3_mul(B, H, C, N, dtype="float16", accum="float"):
     """O = X .* Y （逐元素，两个 [B,H,C,N]）"""
