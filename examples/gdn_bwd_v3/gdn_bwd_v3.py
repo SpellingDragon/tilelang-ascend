@@ -672,7 +672,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     # GDN_V3_DK_SPLIT=1 时额外产出 dk 的四项单独结果，用于一次车定位是哪一项错
-    _split = os.environ.get("GDN_V3_DK_SPLIT") == "1"
+    _split = os.environ.get("GDN_V3_DK_SPLIT", "1") == "1"   # 环境变量两次未生效，先默认开
     dk_parts = {k: torch.zeros(B, H, T_len, DK, dtype=dt, device=dev)
                 for k in ("q1", "q2", "q3", "q4")} if _split else None
     carry = torch.zeros(B, H, dtype=torch.float32, device=dev)
