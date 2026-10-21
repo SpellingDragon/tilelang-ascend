@@ -767,12 +767,14 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dbeta[:, :, sl] = dbeta[:, :, sl] + r3
         # ---- B3/B9/B10/B11/B13/B14: dgam 与 dg ----
         gam2 = d["Gamc"].float()
-        dgam = (d["dP"].float() * m_m * d["raw"].float()).sum(-1)          # B3
+        # B3 与 B11 先合成 dgam2，再统一乘 Gam 做 rowsum - colsum（B12）
+        dgam2 = d["dP"].float() * m_m * d["raw"].float() + dl * d["Betac"][:, :, :, None] * kk
         dgam = dgam - dth * d["th"].float()                                # B10 第一项
         dgam[:, :, -1] += (dth * d["th"].float()).sum(-1)                   # B10 第二项
         qh = k_tb_qh(d["Qc"], d["Hc"])                                      # q H_in^T
         de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * r2      # B5 + B8
-        dgam = dgam + (dl * gam2 * kk).sum(-1) - (dl * gam2 * kk).sum(-2)   # B11 → B12
+        w12 = dgam2 * gam2
+        dgam = w12.sum(-1) - w12.sum(-2)                                    # B12
         dgam = dgam + d["Ec"] * de                                         # B13
         # B9 用的是「下一个 chunk 的 Delta'」（即 golden 的 dp_rel），不是当前这个
         dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * nxt_delta.float()).sum((-1, -2))
