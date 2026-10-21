@@ -324,6 +324,26 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
 
 # ---------------------------- relay：反向扫描（P4） ----------------------------
 @tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_mm(B, H, C, M, N, dtype="float16", accum="float"):
+    """O = A @ X,  A:[B,H,C,M], X:[M,N] -> [B,H,C,N]   （X 与 batch 无关）"""
+
+    @T.prim_func
+    def main(A: T.Tensor([B, H, C, M], dtype), X: T.Tensor([M, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, C, N], dtype)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            a_l1 = T.alloc_L1([C, M], dtype)
+            x_l1 = T.alloc_L1([M, N], dtype)
+            o_l0 = T.alloc_L0C([C, N], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(X[0, 0], x_l1)
+            T.gemm_v0(a_l1, x_l1, o_l0, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
+
+    return main
+
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
 def gdn_v3_ta(B, H, C, M, N, dtype="float16", accum="float"):
     """O = A^T B,  A:[C,M], B:[C,N] -> [M,N]"""
 
@@ -499,7 +519,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
     k_ta_dvn = gdn_v3_ta(B, H, C, DV, DK)  # dvnew^T W  /  e_do^T Q
     k_tb_kt = gdn_v3_tb(B, H, C, DV, DK)   # Kt Delta'^T
-    k_tb_vn = gdn_v3_tb(B, H, C, DV, DK)   # vnew Delta'
+    k_mm = gdn_v3_mm(B, H, C, DV, DK)      # vnew @ Delta'
 
     dq = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
     dk = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
@@ -526,7 +546,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, vnew=vnew, wm=wm, P=_P, dqkt=dqkt, edo=edo,
-                          glast=float(torch.exp(Gc[:, :, -1]).mean().item()),
+                          glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
     torch.npu.synchronize()
 
@@ -541,17 +561,17 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if delta is None:
             dvnew = base
         else:
-            dvnew = base + k_tb_kt(d["Kc"], delta)   # Kt [C,DK] x Delta' [DV,DK]^T
+            dvnew = base + k_tb_kt(d["Kc"], delta)   # Kt [C,DK] x Delta' [DV,DK]^T (per-bh)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
         tw = k_ta_dvn(dvnew, d["wm"])
         nxt = tq.float() - tw.float()
         if delta is not None:
-            nxt = nxt + d["glast"] * delta.float()
+            nxt = nxt + d["glast"][:, :, None, None] * delta.float()
         delta = nxt.to(dt)
         # dk += th .* (vnew Delta')
         if c < NC - 1:
-            dkt = k_tb_vn(d["vnew"], cache[c + 1]["delta_next"])
+            dkt = k_mm(d["vnew"], cache[c + 1]["delta_next"])
             dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
         else:
             dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"])
