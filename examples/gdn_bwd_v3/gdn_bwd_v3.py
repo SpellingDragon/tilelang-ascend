@@ -388,6 +388,52 @@ def gdn_v3_tb(B, H, C, M, N, dtype="float16", accum="float"):
 
     return main
 
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_mul(B, H, C, N, dtype="float16", accum="float"):
+    """O = X .* Y （逐元素，两个 [B,H,C,N]）"""
+
+    @T.prim_func
+    def main(X: T.Tensor([B, H, C, N], dtype), Y: T.Tensor([B, H, C, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, C, N], dtype)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            x16 = T.alloc_ub([C, N], dtype)
+            x32 = T.alloc_ub([C, N], accum)
+            y16 = T.alloc_ub([C, N], dtype)
+            o16 = T.alloc_ub([C, N], dtype)
+            T.copy(X[b, h, 0, 0], x16)
+            T.copy(Y[b, h, 0, 0], y16)
+            T.copy(x16, x32)
+            for i, j in T.Parallel(C, N):
+                x32[i, j] = x32[i, j] * T.cast(y16[i, j], accum)
+            T.copy(x32, o16)
+            T.copy(o16, O[b, h, 0, 0])
+
+    return main
+
+
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_rowsum(B, H, C, N, dtype="float16", accum="float"):
+    """rows = X @ ones(N,16) 的第 0 列 == rowsum(X)"""
+
+    @T.prim_func
+    def main(X: T.Tensor([B, H, C, N], dtype), Ones: T.Tensor([N, 16], dtype),  # type: ignore
+             R: T.Tensor([B, H, C, 16], accum)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            x_l1 = T.alloc_L1([C, N], dtype)
+            ones_l1 = T.alloc_L1([N, 16], dtype)
+            o_l0 = T.alloc_L0C([C, 16], accum)
+            T.copy(X[b, h, 0, 0], x_l1)
+            T.copy(Ones[0, 0], ones_l1)
+            T.gemm_v0(x_l1, ones_l1, o_l0, init=True)
+            T.copy(o_l0, R[b, h, 0, 0])
+
+    return main
+
+
 # ---------------------------- host：chunk 循环（D23） ----------------------------
 def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     """返回 (dq, dk, dv)。前置 S/A/H 复用 v2 的三件（均已真机验证）。"""
