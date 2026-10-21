@@ -47,7 +47,10 @@ def v3_vnew(B, H, NC, C, DV, DK, dtype="float16", accum="float"):
             wh_ub = T.alloc_ub([C, DV], accum)
             io_ub = T.alloc_ub([C, DV], dtype)
 
-            for c in T.serial(NC):
+            # python range: every c is a compile-time constant, so the
+            # per-chunk loads cannot be hoisted out of the loop (cc=3 alone was
+            # exact with T.serial, notes [80]).
+            for c in range(NC):
                 T.copy(Wm[b, h, c, 0, 0], w_l1)
                 T.copy(Hh[b, h, c, 0, 0], hin_l1)
                 T.copy(U0[b, h, c, 0, 0], u0_16)
