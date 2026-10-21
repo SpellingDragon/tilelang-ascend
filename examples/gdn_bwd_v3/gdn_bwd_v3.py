@@ -321,6 +321,49 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
     return main
 
 
+
+# ---------------------------- relay：反向扫描（P4） ----------------------------
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_ta(B, H, C, M, N, dtype="float16", accum="float"):
+    """O = A^T B,  A:[C,M], B:[C,N] -> [M,N]"""
+
+    @T.prim_func
+    def main(A: T.Tensor([B, H, C, M], dtype), Bm: T.Tensor([B, H, C, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, M, N], dtype)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            a_l1 = T.alloc_L1([C, M], dtype)
+            b_l1 = T.alloc_L1([C, N], dtype)
+            o_l0 = T.alloc_L0C([M, N], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(Bm[b, h, 0, 0], b_l1)
+            T.gemm_v0(a_l1, b_l1, o_l0, transpose_A=True, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
+
+    return main
+
+
+@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+def gdn_v3_tb(B, H, C, M, N, dtype="float16", accum="float"):
+    """O = A B^T,  A:[C,N], B:[M,N] -> [C,M]"""
+
+    @T.prim_func
+    def main(A: T.Tensor([B, H, C, N], dtype), Bm: T.Tensor([B, H, M, N], dtype),  # type: ignore
+             O: T.Tensor([B, H, C, M], dtype)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            a_l1 = T.alloc_L1([C, N], dtype)
+            b_l1 = T.alloc_L1([M, N], dtype)
+            o_l0 = T.alloc_L0C([C, M], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(Bm[b, h, 0, 0], b_l1)
+            T.gemm_v0(a_l1, b_l1, o_l0, transpose_B=True, init=True)
+            T.copy(o_l0, O[b, h, 0, 0])
+
+    return main
+
 # ---------------------------- host：chunk 循环（D23） ----------------------------
 def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     """返回 (dq, dk, dv)。前置 S/A/H 复用 v2 的三件（均已真机验证）。"""
