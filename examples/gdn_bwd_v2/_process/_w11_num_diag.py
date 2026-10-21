@@ -117,6 +117,15 @@ def run(tag, args):
         k, v, beta, ws_g, ws_a, msk_j, ones_dv, ones_dk, ones_c,
         outs_a[2], outs_a[3], outs_a[4], outs_a[5], outs_a[6], outs_a[7], outs_a[8])
     torch.npu.synchronize()
+    if os.environ.get("GDN_S2A_VN_DBG") == "1":
+        # the probe overwrote WS_DKT (scan2a out4) with the Vnew of chunk
+        # GDN_S2A_VN_CC; compare it with the fp64 replay of the same chunk.
+        _vcc = int(os.environ.get("GDN_S2A_VN_CC", "0"))
+        _vc = _np.asarray(outs_a[4].float().cpu().numpy()[0, 0], _np.float64)
+        _vg = _np.asarray(_cache[_vcc]["vnew"], _np.float64)
+        _dd = float(_np.abs(_vc - _vg).max())
+        print(f"VN cc={_vcc} maxdiff={_dd:.3e} goldmax={float(_np.abs(_vg).max()):.3e} "
+              f"rel={_dd / (float(_np.abs(_vg).max()) + 1e-30):.3e}")
     if os.environ.get("GDN_S2B_DBG") == "1":
         # the probe overwrote this scan2a output with what scan2b read for
         # dVnew; compare against the box's out2 (both are the same tensor).

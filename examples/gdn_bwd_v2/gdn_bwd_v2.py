@@ -100,6 +100,12 @@ _S2A_DW_DBG = int(os.environ.get("GDN_S2A_DW_DBG", "0"))
 # it against scan2a's out2. Kernel-side read is the only remaining suspect
 # when the stored tensor and the formula are both proven correct.
 _S2B_DBG = os.environ.get("GDN_S2B_DBG", "0") == "1"
+# Fourth switch (default off): with GDN_S2A_VN_DBG=1, scan2a writes the Vnew it
+# computed for the current chunk/bv into WS_DKT (the dKt box is zero anyway),
+# so the driver can compare against the fp64 replay per chunk. Vnew is the only
+# per-chunk quantity dq depends on through both of its terms.
+_S2A_VN_DBG = os.environ.get("GDN_S2A_VN_DBG", "0") == "1"
+_S2A_VN_CC = int(os.environ.get("GDN_S2A_VN_CC", "0"))  # which chunk to dump
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
 pass_configs = {
@@ -819,6 +825,12 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(wh_ub, io_bq)
                     T.copy(io_bq, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], vnew_l1)
+                    if _S2A_VN_DBG and cc == _S2A_VN_CC:
+                        # probe: this chunk/bv's Vnew, out through the dKt box
+                        # (zero in production). io_cc is idle between the P
+                        # section and B11.
+                        T.copy(vnew_l1, io_cc)
+                        T.copy(io_cc, WS_DKT[b, h, cc * C, bv * BV])
                     # ---- B5a half-loop: QH = sum_hh Q_hh H_in_hh^T (init=(hh==0) clear) ----
                     for hh in T.serial(bk_num):
                         T.copy(Q[b, h, cc * C, hh * BK], q_l1)
