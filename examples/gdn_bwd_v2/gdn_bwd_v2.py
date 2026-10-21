@@ -95,6 +95,11 @@ _S2A_DBG = os.environ.get("GDN_S2A_DBG", "0") == "1"
 #   1 = fp16 P (io_cc cast back to fp32), the A operand of dVnew = P^T dO
 #   2 = fp32 dO (bq_ub), the B operand of the same GEMM
 _S2A_DW_DBG = int(os.environ.get("GDN_S2A_DW_DBG", "0"))
+# Third switch (default off): with GDN_S2B_DBG=1, scan2b writes what it reads
+# for dVnew (the B7 boundary load) back into WS_DK, so the driver can compare
+# it against scan2a's out2. Kernel-side read is the only remaining suspect
+# when the stored tensor and the formula are both proven correct.
+_S2B_DBG = os.environ.get("GDN_S2B_DBG", "0") == "1"
 
 # Developer + combineCV: design.md Sec 7 -- all five keys True (H3).
 pass_configs = {
@@ -866,16 +871,18 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                             T.gemm_v0(bq_l1, hin_l1, dw0_l0, init=(bv == 0))
                         else:
                             T.gemm_v0(bq_l1, hin_l1, dw1_l0, init=(bv == 0))
-                    # ---- B6b half-loop: dH_hh += dVnew^T (-W_hh) ----
-                    # The chain rule gives (-W)^T dVnew, i.e. dVnew^T (-W) with
-                    # the neg folded into w_full. Using Vnew here (the forward
-                    # state) instead of dVnew was the whole DH0 error: CPU
-                    # golden matches dVnew at 1.5e-5 and Vnew at 4.3e-1.
+                    # ---- B6b half-loop: dH_hh += Vnew^T (-W_hh) ----
+                    # NOTE (D17): the chain rule wants dVnew^T (-W) -- CPU golden
+                    # scores that 1.5e-5 vs 4.3e-1 for Vnew -- but writing it as
+                    # another transpose_A GEMM on bq_l1 did not take effect
+                    # (DH0 stayed 4.58e-1): bq_l1 is already the A operand of the
+                    # no-transpose dW GEMM, and one L1 lane cannot serve A and
+                    # A^T at the same time. Needs a dedicated A^T lane.
                     for hh in T.serial(bk_num):
                         if hh == 0:
-                            T.gemm_v0(bq_l1, w_full_l1[hh, :, :], dh0_l0, transpose_A=True, init=False)
+                            T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh0_l0, transpose_A=True, init=False)
                         else:
-                            T.gemm_v0(bq_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
+                            T.gemm_v0(vnew_l1, w_full_l1[hh, :, :], dh1_l0, transpose_A=True, init=False)
                     # ---- B15: dH half -> WS_D relay (dh0 for the first chunk);
                     #      B9 vec part: dH += exp(gam_{n-1}) Delta' ----
                     # D13: python range (compile-time unroll) instead of T.serial.
@@ -1066,7 +1073,6 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
             xk_l1 = T.alloc_L1([C, BK], dtype)  # dW half / K.*X product lane
             bek_l1 = T.alloc_L1([C, BK], dtype)  # bee .* K half (B8)
             bq_l1 = T.alloc_L1([C, BV], dtype)  # dVnew (B7 dA GEMM input)
-            dv_b_l1 = T.alloc_L1([C, BV], dtype)  # dVnew as the B operand of t1 = A^T dVnew
             bv_l1 = T.alloc_L1([C, BV], dtype)  # beta .* V (B7 dA GEMM input)
             t1_l1 = T.alloc_L1([C, BV], dtype)  # V .* t1 rowsum source (B7)
             onesdv_l1 = T.alloc_L1([BV, 16], dtype)
@@ -1174,10 +1180,14 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     # because io_bq2 is reused by the V/beta loads in the same
                     # block -- the read must be probed, not rerouted.
                     T.copy(WS_DV[b, h, cc * C, bv * BV], bq_l1)
-                    # A and B operands need different L1 layouts: bq_l1 feeds the
-                    # dA GEMM as A, so t1 = A^T dVnew must not reuse it as B (that
-                    # read landed 3.6x off but finite, notes [58]).
-                    T.copy(WS_DV[b, h, cc * C, bv * BV], dv_b_l1)
+                    if _S2B_DBG:
+                        # probe: what scan2b actually received for dVnew.
+                        # io_bq2 has no writer before this point in B7; the
+                        # fp32 lane goes out through WS_DK (an input here), and
+                        # the driver reads the same Python tensor afterwards.
+                        T.copy(bq_l1, io_bq2)
+                        T.copy(io_bq2, wh2_ub)
+                        T.copy(wh2_ub, WS_DK[b, h, cc * C, bv * BV])
                     # beta .* V -> bv_l1
                     T.tile.fill(wh2_ub, 0.0)
                     T.copy(V[b, h, cc * C, bv * BV], io_bq2)
@@ -1194,7 +1204,7 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                     T.copy(io_bq2, workspace_vcb[cid, :, :])
                     T.copy(workspace_vcb[cid, :, :], bv_l1)
                     # t1 = A^T dVnew
-                    T.gemm_v0(a_l1, dv_b_l1, t1_l0, transpose_A=True, init=True)
+                    T.gemm_v0(a_l1, bq_l1, t1_l0, transpose_A=True, init=True)
                     T.copy(t1_l0, workspace_lcb[cid, :, :])
                     T.copy(workspace_lcb[cid, :, :], t1b_ub)  # t1 block
                     # dbeta += rowsum(V .* t1) (S7e :761-772)
