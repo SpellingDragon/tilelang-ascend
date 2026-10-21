@@ -56,7 +56,10 @@ def v3_vnew(B, H, NC, C, DV, DK, dtype="float16", accum="float"):
                 T.copy(Hh[b, h, c, 0, 0], hin_l1)
                 T.copy(U0[b, h, c, 0, 0], u0_16)
                 T.copy(u0_16, u0_32)
-                # W @ H^T in L0C, then Vnew = U0 - that, on the vector side
+                # W @ H^T in L0C, then Vnew = U0 - that, on the vector side.
+                # D23: init=True does not clear L0C on every iteration, so fill
+                # it explicitly first.
+                T.tile.fill(vn_l0, 0.0)
                 T.gemm_v0(w_l1, hin_l1, vn_l0, transpose_B=True, init=True)
                 T.copy(vn_l0, wh_ub)
                 for i, j in T.Parallel(C, DV):
