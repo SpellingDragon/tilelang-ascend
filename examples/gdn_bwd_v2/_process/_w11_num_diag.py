@@ -127,6 +127,18 @@ def run(tag, args):
         _dd = float(_np.abs(_vc - _vg).max())
         print(f"VN cc={_vcc} maxdiff={_dd:.3e} goldmax={float(_np.abs(_vg).max()):.3e} "
               f"rel={_dd / (float(_np.abs(_vg).max()) + 1e-30):.3e}")
+        # split Vnew into U0 and Wterm: Wterm is the only term that vanishes on
+        # chunk 0, so this tells which half carries the 4.19%.
+        _u0g = _np.asarray(_cache[_vcc]["u0"], _np.float64)
+        _wg = _np.asarray(_cache[_vcc]["w_mat"], _np.float64)   # +W
+        _hg = _np.asarray(_cache[_vcc]["hin"], _np.float64)
+        _wt_host = -(_wg @ _hg.T)
+        _wt_card = _vc - _u0g
+        _rr = lambda a, b: float(_np.abs(a - b).max()) / (float(_np.abs(b).max()) + 1e-30)
+        print(f"VNSPLIT cc={_vcc} card_vs_u0={_rr(_vc, _u0g):.3e} "
+              f"wt_card_vs_host={_rr(_wt_card, _wt_host):.3e} "
+              f"vnew_vs_gold={_rr(_vc, _u0g + _wt_host):.3e} "
+              f"u0max={float(_np.abs(_u0g).max()):.3e} wtmax={float(_np.abs(_wt_host).max()):.3e}")
     if os.environ.get("GDN_S2B_DBG") == "1":
         # the probe overwrote this scan2a output with what scan2b read for
         # dVnew; compare against the box's out2 (both are the same tensor).
