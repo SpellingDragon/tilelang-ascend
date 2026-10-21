@@ -625,9 +625,6 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_tb_cc = gdn_v3_tb(B, H, C, C, C)     # (A^T da) A^T
     k_rawk = gdn_v3_raw(B, H, C, DK)       # KKt = K K^T（同一形态）
     k_ab_cc = gdn_v3_ab(B, H, C, C)        # (dx + dx^T) K
-    k_mul_cc = gdn_v3_mul(B, H, C, C)
-    k_rows_cc = gdn_v3_rowsum(B, H, C, C)
-    ones_c = torch.ones(C, 16, dtype=dt, device=dev)
     msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     k_mul = gdn_v3_mul(B, H, C, DK)
     k_mulv = gdn_v3_mul(B, H, C, DV)
@@ -709,7 +706,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         r1 = k_rows_v(k_mulv(d["Vc"], t1), ones_v)[..., 0]
         r2 = k_rows_k(k_mul(d["Kc"], t2n), ones_k)[..., 0]
         # B11: dA 的两项 -> dL = M .* (-A^T dA A^T) -> dk 与 dbeta 各一项
-        da = (k_tb_cv(dvnew, d["bv"]) + k_tb_ck(dw, d["bek_n"])).float()
+        # bek_n = -(beta E K)，所以第二项的符号是减
+        da = k_tb_cv(dvnew, d["bv"]).float() - k_tb_ck(dw, d["bek_n"]).float()
         t_ = k_ta_cc(d["Ac"], da.to(dt))
         o_ = k_tb_cc(t_, d["Ac"]).float()
         dl = msk_j[None, None] * (-o_)                       # [B,H,C,C] fp32
@@ -718,7 +716,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dxs = (dx + dx.transpose(-1, -2)).to(dt)             # dx + dx^T
         dk[:, :, sl, :] = dk[:, :, sl, :] + k_ab_cc(dxs, d["Kc"])
         kk = k_rawk(d["Kc"], d["Kc"]).float()                # K K^T
-        r3 = k_rows_cc(k_mul_cc((dl * gam2 * kk).to(dt), 1), ones_c)[..., 0]
+        r3 = (dl * gam2 * kk).sum(-1)          # [C,C] 很小，host 求和即可
         dbeta[:, :, sl] = dbeta[:, :, sl] + r3
         d["delta_next"] = delta
         if c == 0:
