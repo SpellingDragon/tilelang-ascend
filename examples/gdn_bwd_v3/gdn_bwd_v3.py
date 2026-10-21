@@ -680,6 +680,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dk = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
     dv = torch.empty(B, H, T_len, DV, dtype=dt, device=dev)
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
+    dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
+    carry = torch.zeros(B, H, dtype=torch.float32, device=dev)
+    k_suffix = gdn_v3_suffix(B, H, C)
+    k_tb_qh = gdn_v3_tb(B, H, C, DV, DK)     # qh = q @ H_in^T
     cache = []
 
     _DBG = os.environ.get("GDN_V3_DBG") == "1"
@@ -707,7 +711,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, vnew=vnew, wm_n=wm_n, bv=bv, bek_n=wm_n, Gamc=Gamc,
-                          P=_P, dqkt=dqkt, edo=edo,
+                          P=_P, dqkt=dqkt, edo=edo, dP=dP, raw=raw,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
     torch.npu.synchronize()
@@ -731,12 +735,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         if delta is not None:
             nxt = nxt + d["glast"][:, :, None, None] * delta.float()
         delta = nxt.to(dt)
-        # dk += th .* (vnew Delta')
-        if c < NC - 1:
-            dkt = k_mm(d["vnew"], cache[c + 1]["delta_next"])
-            dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
-        else:
-            dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"])
+        # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
+        nxt_delta = cache[c + 1]["delta_next"] if c < NC - 1 else torch.zeros_like(delta)
+        dkt = k_mm(d["vnew"], nxt_delta) if c < NC - 1 else torch.zeros_like(dk[:, :, sl, :])
+        dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
+        dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
         dv[:, :, sl, :] = k_scale(t1, d["Betac"])
@@ -761,8 +764,21 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         kk = k_rawk(d["Kc"], d["Kc"]).float()                # K K^T
         r3 = (dl * gam2 * kk).sum(-1)          # [C,C] 很小，host 求和即可
         dbeta[:, :, sl] = dbeta[:, :, sl] + r3
+        # ---- B3/B9/B10/B11/B13/B14: dgam 与 dg ----
+        gam2 = d["Gamc"].float()
+        m_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+        dgam = (d["dP"].float() * m_m * d["raw"].float()).sum(-1)          # B3
+        dgam = dgam - dth * d["th"].float()                                # B10 第一项
+        dgam[:, :, -1] += (dth * d["th"].float()).sum(-1)                   # B10 第二项
+        qh = k_tb_qh(d["Qc"], d["Hc"])                                      # q H_in^T
+        de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * r2      # B5 + B8
+        dgam = dgam + (dl * gam2 * kk).sum(-1) - (dl * gam2 * kk).sum(-2)   # B11 → B12
+        dgam = dgam + d["Ec"] * de                                         # B13
+        dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * delta.float()).sum((-1, -2))  # B9
+        dg[:, :, sl] = k_suffix(dgam, carry)
+        carry = carry + dgam.sum(-1)
         d["delta_next"] = delta
         if c == 0:
             dh0 = delta
     torch.npu.synchronize()
-    return dq, dk, dv, dbeta, dh0
+    return dq, dk, dv, dbeta, dg, dh0
