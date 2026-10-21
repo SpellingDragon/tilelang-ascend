@@ -105,8 +105,10 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None):
             dump[f"c{c}"] = {
                 "da": float(np.abs(da).max()), "dl": float(np.abs(dl).max()),
                 "de": float(np.abs(de).max()), "dgam": float(np.abs(dgam).max()),
-                "r1": float(np.abs(t1).max()), "r2": float(np.abs(t2).max()),
-                "r3": float(np.abs((dl * gam2 * kk)).max()),
+                # 与卡上打印对齐：都是 rowsum 之后的 [C] 向量
+                "r1": float(np.abs((Vn[sl] * t1).sum(1)).max()),
+                "r2": float(np.abs((Kn[sl] * t2).sum(1)).max()),
+                "r3": float(np.abs((dl * gam2 * kk).sum(1)).max()),
                 "q1": float(np.abs(dqkt.T @ Qn[sl]).max()),
                 "q2": float(np.abs((ca["beta"] * e_vec)[:, None] * t2).max()),
                 "q3": float(np.abs(th[:, None] * dkt).max()),
