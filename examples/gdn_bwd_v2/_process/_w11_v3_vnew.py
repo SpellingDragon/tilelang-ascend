@@ -32,7 +32,10 @@ def v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
 
     @T.prim_func
     def main(
-        U0: T.Tensor([B, H, C, DV], dtype),   # type: ignore
+        V: T.Tensor([B, H, C, DV], dtype),    # type: ignore
+        Beta: T.Tensor([B, H, C], "float"),   # type: ignore
+        G: T.Tensor([B, H, C], "float"),      # type: ignore  cumsum gam
+        A: T.Tensor([B, H, C, C], dtype),     # type: ignore  solve_a out
         Wm: T.Tensor([B, H, C, DK], dtype),   # type: ignore
         Hh: T.Tensor([B, H, DV, DK], dtype),  # type: ignore  H_in of this chunk
         VN: T.Tensor([B, H, C, DV], dtype),   # type: ignore
@@ -40,9 +43,15 @@ def v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
+            a_l1 = T.alloc_L1([C, C], dtype)
+            bv_l1 = T.alloc_L1([C, DV], dtype)     # beta.*V (A operand of U0)
             w_l1 = T.alloc_L1([C, DK], dtype)      # A operand only
             hin_l1 = T.alloc_L1([DV, DK], dtype)   # B operand only
             vn_l0 = T.alloc_L0C([C, DV], accum)
+            be_ub = T.alloc_ub([C], accum)
+            s_ub = T.alloc_ub([C], accum)
+            e_ub = T.alloc_ub([C], accum)
+            v16 = T.alloc_ub([C, DV], dtype)
             u0_16 = T.alloc_ub([C, DV], dtype)
             u0_32 = T.alloc_ub([C, DV], accum)
             wh_ub = T.alloc_ub([C, DV], accum)
@@ -52,10 +61,21 @@ def v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
             # per-chunk loads cannot be hoisted out of the loop (cc=3 alone was
             # exact with T.serial, notes [80]).
             if True:
+                T.copy(A[b, h, 0, 0], a_l1)
+                T.copy(Beta[b, h, 0], be_ub)
+                T.copy(G[b, h, 0], s_ub)
+                for i in T.Parallel(C):
+                    e_ub[i] = T.exp(s_ub[i])
+                # U0 = A @ (beta .* V) computed in-kernel
+                T.copy(V[b, h, 0, 0], v16)
+                for i, j in T.Parallel(C, DV):
+                    v16[i, j] = T.cast(T.cast(v16[i, j], accum) * be_ub[i], dtype)
+                T.copy(v16, bv_l1)
+                T.gemm_v0(a_l1, bv_l1, vn_l0, init=True)
+                T.copy(vn_l0, u0_32)
+                T.copy(u0_32, u0_16)
                 T.copy(Wm[b, h, 0, 0], w_l1)
                 T.copy(Hh[b, h, 0, 0], hin_l1)
-                T.copy(U0[b, h, 0, 0], u0_16)
-                T.copy(u0_16, u0_32)
                 # W @ H^T in L0C, then Vnew = U0 - that, on the vector side.
                 T.gemm_v0(w_l1, hin_l1, vn_l0, transpose_B=True, init=True)
                 T.copy(vn_l0, wh_ub)
@@ -85,7 +105,11 @@ def main():
     wm = np.stack([np.asarray(cache[c]["w_mat"], np.float64) for c in range(NC)])       # [NC,C,DK]
     hin = np.stack([np.asarray(cache[c]["hin"], np.float64) for c in range(NC)])        # [NC,DV,DK]
 
-    t_u0 = torch.from_numpy(u0.astype(np.float16))[None, None].to("npu")
+    t_v = v.half()[None, None].to("npu")
+    t_b = beta.float()[None, None].to("npu")
+    t_g = g.float()[None, None].to("npu")
+    t_a = torch.from_numpy(np.stack([np.asarray(cache[c]["a_mat"], np.float64) for c in range(NC)]).astype(np.float16))[None, None].to("npu")
+    _ = u0
     t_w = torch.from_numpy(wm.astype(np.float16))[None, None].to("npu")
     t_h = torch.from_numpy(hin.astype(np.float16))[None, None].to("npu")
 
@@ -96,7 +120,9 @@ def main():
     ker = v3_vnew(B, H, C, DV, DK)
     outs = []
     for c in range(NC):                      # D23: one launch per chunk
-        outs.append(ker(t_u0[:, :, c], t_w[:, :, c], t_h[:, :, c]).float().cpu().numpy()[0, 0])
+        sl = slice(c * C, (c + 1) * C)
+        outs.append(ker(t_v[:, :, sl], t_b[:, :, sl], t_g[:, :, sl], t_a[:, :, sl],
+                        t_w[:, :, c], t_h[:, :, c]).float().cpu().numpy()[0, 0])
     torch.npu.synchronize()
     got = np.stack(outs)
 
