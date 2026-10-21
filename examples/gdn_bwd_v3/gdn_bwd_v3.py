@@ -72,6 +72,37 @@ def gdn_v3_wh(B, H, C, DV, DK, dtype="float16", accum="float"):
     return main
 
 
+@tilelang.jit(out_idx=[4], pass_configs=_PASS)
+def gdn_v3_vnew(B, H, C, DV, DK, dtype="float16", accum="float"):
+    """Vnew = A (beta V) + (-W) H^T，两项累加在同一 L0C。
+
+    相比 `A@(βV)` → GM → `W@H^T` → GM → 减法，少三次 fp16 舍入与三次 GM 往返；
+    **注意** 这是 no-transpose 与 transpose_B 混合同族累加，需上卡确认（D22 家族）。
+    """
+
+    @T.prim_func
+    def main(A: T.Tensor([B, H, C, C], dtype), BV: T.Tensor([B, H, C, DV], dtype),  # type: ignore
+             WN: T.Tensor([B, H, C, DK], dtype), Hh: T.Tensor([B, H, DV, DK], dtype),  # type: ignore
+             VN: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
+        with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
+            b = cid // H
+            h = cid % H
+            a_l1 = T.alloc_L1([C, C], dtype)      # A only
+            bv_l1 = T.alloc_L1([C, DV], dtype)    # B only
+            wn_l1 = T.alloc_L1([C, DK], dtype)    # A only
+            hin_l1 = T.alloc_L1([DV, DK], dtype)  # B only
+            o_l0 = T.alloc_L0C([C, DV], accum)
+            T.copy(A[b, h, 0, 0], a_l1)
+            T.copy(BV[b, h, 0, 0], bv_l1)
+            T.copy(WN[b, h, 0, 0], wn_l1)
+            T.copy(Hh[b, h, 0, 0], hin_l1)
+            T.gemm_v0(a_l1, bv_l1, o_l0, init=True)
+            T.gemm_v0(wn_l1, hin_l1, o_l0, transpose_B=True, init=False)
+            T.copy(o_l0, VN[b, h, 0, 0])
+
+    return main
+
+
 @tilelang.jit(out_idx=[2], pass_configs=_PASS)
 def gdn_v3_raw(B, H, C, DK, dtype="float16", accum="float"):
     """raw = Q K^T"""
@@ -469,6 +500,7 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
 
     k_ab = gdn_v3_ab(B, H, C, DV)
     k_ab_k = gdn_v3_ab(B, H, C, DK)
+    k_vnew = gdn_v3_vnew(B, H, C, DV, DK)
     k_wh = gdn_v3_wh(B, H, C, DV, DK)
     k_raw = gdn_v3_raw(B, H, C, DK)
     k_dp = gdn_v3_dp(B, H, C, DV)
@@ -507,13 +539,10 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         Gamc = ws_gam[:, :, c, :, :]
 
         bv = k_scale(Vc, Betac); _step("scale")      # beta .* V
-        u0 = k_ab(Ac, bv); _step("ab")               # U0 = A beta V
-        # (beta .* E) 在 host 合成为一个 fp32 向量，复用已验证的 k_scale：
-        # scale_be 版本在同一 kernel 里读两个 1-D buffer，真机 507015。
-        bek = k_scale(Kc, Betac * Ec); _step("sbe")
-        wm = k_ab_k(Ac, bek); _step("ab_k")          # W = A bek
-        wh = k_wh(wm, Hc); _step("wh")               # W H^T
-        vnew = k_sub(u0, wh); _step("sub")           # Vnew
+        # -W 的构造：A @ (-(beta E) K) = -W，于是 Vnew 可以在一个 L0C 里累加出来
+        bek_n = k_scale(Kc, -Betac * Ec); _step("sbe")
+        wm_n = k_ab_k(Ac, bek_n); _step("ab_k")      # -W
+        vnew = k_vnew(Ac, bv, wm_n, Hc); _step("vnew")
 
         # raw/P 只在 relay 的 `P^T dO` 里需要（B1）；当前的 dq 链用不到，
         # 先跳过以免每次 launch 白算一次 [C,C] 的 gate。
@@ -573,6 +602,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
 
     k_ab = gdn_v3_ab(B, H, C, DV)
     k_ab_k = gdn_v3_ab(B, H, C, DK)
+    k_vnew = gdn_v3_vnew(B, H, C, DV, DK)
     k_wh = gdn_v3_wh(B, H, C, DV, DK)
     k_raw = gdn_v3_raw(B, H, C, DK)
     k_dp = gdn_v3_dp(B, H, C, DV)
@@ -586,7 +616,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
     k_ta_dvn = gdn_v3_ta(B, H, C, DV, DK)  # dvnew^T W  /  e_do^T Q
     k_tb_kt = gdn_v3_tb(B, H, C, DV, DK)   # Kt Delta'^T
-    k_mm = gdn_v3_mm(B, H, C, DV, DK)      # vnew @ Delta'  /  dvnew @ H_in
+    k_mm = gdn_v3_mm(B, H, C, DV, DK)
+    k_vnew = gdn_v3_vnew(B, H, C, DV, DK)      # vnew @ Delta'  /  dvnew @ H_in
     k_ta_cdk = gdn_v3_ta(B, H, C, C, DK)   # A^T dw
     k_mul = gdn_v3_mul(B, H, C, DK)
     k_mulv = gdn_v3_mul(B, H, C, DV)
@@ -609,11 +640,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         Ec = torch.exp(Gc)
         Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
-        u0 = k_ab(Ac, bv)
         bek = k_scale(Kc, Betac * Ec)
-        wm = k_ab_k(Ac, bek)
-        wh = k_wh(wm, Hc)
-        vnew = k_sub(u0, wh)
+        wm = k_ab_k(Ac, bek)                 # +W（relay 在这里需要正号）
+        vnew = k_vnew(Ac, bv, k_ab_k(Ac, k_scale(Kc, -Betac * Ec)), Hc)
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
         dP = k_dp(DOc, vnew); _step("dp")
