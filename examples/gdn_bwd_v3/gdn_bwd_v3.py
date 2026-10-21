@@ -444,3 +444,121 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         dv[:, :, sl, :] = k_scale(k_dv(Ac, vnew), Betac)
     torch.npu.synchronize()
     return dq, dk, dv
+
+
+def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
+    """完整反向：先正向缓存 vnew，再反向扫 Delta'，输出 (dq, dk, dv, dh0)。
+
+    依据 `_np_chunk_bwd` 的 B1-B10（见 notes [91]）：
+        dvnew_c = P_c^T dO_c + Kt_c (Delta'_{c+1})^T
+        dw_c    = -dvnew_c H_in_c
+        Delta'_c = e_do_c^T Q_c - dvnew_c^T W_c + glast_c * Delta'_{c+1}
+        dk_c    = dqkt_c^T Q_c + (beta E) .* t2_c + th_c .* (vnew_c Delta'_{c+1})
+        dv_c    = beta_c .* (A_c^T dvnew_c)
+    `dq` 与 relay 无关（`dqkt K + e_do H_in`），直接沿用第一遍。
+    """
+    try:
+        from gdn_bwd_v2 import (  # noqa: E402
+            gdn_bwd_v2_cumsum, gdn_bwd_v2_scan1, gdn_bwd_v2_solve_a,
+        )
+    except ImportError:
+        from examples.gdn_bwd_v2.gdn_bwd_v2 import (  # noqa: E402
+            gdn_bwd_v2_cumsum, gdn_bwd_v2_scan1, gdn_bwd_v2_solve_a,
+        )
+
+    B, H, T_len, DK = q.shape
+    DV = v.shape[-1]
+    C = chunk_size
+    NC = (T_len + C - 1) // C
+    dt = q.dtype
+    dev = q.device
+    dtype = "float16" if dt == torch.float16 else "float32"
+
+    msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
+    idt = torch.eye(C, dtype=torch.float32, device=dev)
+    msk_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
+    ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
+        k, beta, ws_g, msk_j, idt)
+    ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype)(
+        k, v, beta, ws_g, ws_a, h0)
+    torch.npu.synchronize()
+
+    k_ab = gdn_v3_ab(B, H, C, DV)
+    k_ab_k = gdn_v3_ab(B, H, C, DK)
+    k_wh = gdn_v3_wh(B, H, C, DV, DK)
+    k_raw = gdn_v3_raw(B, H, C, DK)
+    k_dp = gdn_v3_dp(B, H, C, DV)
+    k_dq = gdn_v3_dq(B, H, C, DK, DV)
+    k_dk = gdn_v3_dk(B, H, C, DK)
+    k_scale = gdn_v3_scale(B, H, C, DV)
+    k_sbe = gdn_v3_scale_be(B, H, C, DK)
+    k_sub = gdn_v3_sub(B, H, C, DV)
+    k_gate = gdn_v3_gate(B, H, C)
+    k_ge = gdn_v3_gate_edo(B, H, C, DV)
+    k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
+    k_ta_dvn = gdn_v3_ta(B, H, C, DV, DK)  # dvnew^T W  /  e_do^T Q
+    k_tb_kt = gdn_v3_tb(B, H, C, DV, DK)   # Kt Delta'^T
+    k_tb_vn = gdn_v3_tb(B, H, C, DV, DK)   # vnew Delta'
+
+    dq = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
+    dk = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
+    dv = torch.empty(B, H, T_len, DV, dtype=dt, device=dev)
+    cache = []
+
+    # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
+    for c in range(NC):
+        sl = slice(c * C, (c + 1) * C)
+        Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
+        Ac, Gc = ws_a[:, :, sl, :], ws_g[:, :, sl]
+        Ec = torch.exp(Gc)
+        Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
+        bv = k_scale(Vc, Betac)
+        u0 = k_ab(Ac, bv)
+        bek = k_sbe(Kc, Betac, Ec)
+        wm = k_ab_k(Ac, bek)
+        wh = k_wh(wm, Hc)
+        vnew = k_sub(u0, wh)
+        raw = k_raw(Qc, Kc)
+        _P = k_gate(raw, Gamc, msk_m)
+        dP = k_dp(DOc, vnew)
+        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc)
+        dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
+        cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
+                          Betac=Betac, vnew=vnew, wm=wm, P=_P, dqkt=dqkt, edo=edo,
+                          glast=float(torch.exp(Gc[:, :, -1]).mean().item()),
+                          th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
+    torch.npu.synchronize()
+
+    # ---- pass 2: 反向扫 Delta' ----
+    delta = None
+    dh0 = None
+    for c in range(NC - 1, -1, -1):
+        d = cache[c]
+        sl = d["sl"]
+        # dvnew = P^T dO + Kt Delta'^T
+        base = k_ta(d["P"], d["DOc"])
+        if delta is None:
+            dvnew = base
+        else:
+            dvnew = base + k_tb_kt(d["Kc"], delta)   # Kt [C,DK] x Delta' [DV,DK]^T
+        # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
+        tq = k_ta_dvn(d["edo"], d["Qc"])
+        tw = k_ta_dvn(dvnew, d["wm"])
+        nxt = tq.float() - tw.float()
+        if delta is not None:
+            nxt = nxt + d["glast"] * delta.float()
+        delta = nxt.to(dt)
+        # dk += th .* (vnew Delta')
+        if c < NC - 1:
+            dkt = k_tb_vn(d["vnew"], cache[c + 1]["delta_next"])
+            dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"]) + (d["th"] * dkt.float()).to(dt)
+        else:
+            dk[:, :, sl, :] = k_dk(d["dqkt"], d["Qc"])
+        # dv = beta .* (A^T dvnew)
+        dv[:, :, sl, :] = k_scale(k_ta(d["Ac"], dvnew), d["Betac"])
+        d["delta_next"] = delta
+        if c == 0:
+            dh0 = delta
+    torch.npu.synchronize()
+    return dq, dk, dv, dh0
