@@ -632,6 +632,13 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     cache = []
 
+    _DBG = os.environ.get("GDN_V3_DBG") == "1"
+
+    def _step(tag):
+        if _DBG:
+            torch.npu.synchronize()
+            print(f"RELAYDBG c@{tag}", flush=True)
+
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
