@@ -676,7 +676,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     k_tb_qh = gdn_v3_tb(B, H, C, DV, DK)     # qh = q @ H_in^T
     cache = []
 
-    _DBG = os.environ.get("GDN_V3_DBG") == "1"
+    _DBG = os.environ.get("GDN_V3_DBG", "1") == "1"   # 临时默认开，取到中间量后改回
 
     def _step(tag):
         if _DBG:
