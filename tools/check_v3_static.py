@@ -173,6 +173,39 @@ def check_file(path: str) -> list[str]:
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in defined:
                 problems.append(f"S4 {fname}: 未定义名字 '{node.id}'")
 
+    # S7/S8：host 侧调用与 kernel 声明的一致性
+    kdefs = {}
+    for fname, out_idx, main, outer in kernel_entries(tree):
+        kdefs[fname] = ([a.arg for a in main.args.args], param_dtypes(main), out_idx or [])
+    inst = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            v = node.value
+            if (isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id in kdefs):
+                inst[node.targets[0].id] = v.func.id
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in inst):
+            kname = inst[node.func.id]
+            params, dtypes, outs = kdefs[kname]
+            expect = len(params) - len(outs)
+            if len(node.args) != expect:
+                problems.append(
+                    f"S8 第 {node.lineno} 行: {node.func.id}({kname}) 传 {len(node.args)} 个实参，"
+                    f"应为 {expect}（{len(params)} 参数 - {len(outs)} 输出）")
+            for idx, arg in enumerate(node.args):
+                if not (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)):
+                    continue
+                declared = dtypes.get(params[idx]) if idx < len(params) else None
+                if arg.func.id == "f16" and declared == "float":
+                    problems.append(
+                        f"S7 第 {node.lineno} 行: {node.func.id} 第 {idx} 个实参用 f16 传给 "
+                        f"{kname}.{params[idx]}（声明 float）")
+                if arg.func.id == "f32" and declared not in (None, "float"):
+                    problems.append(
+                        f"S7 第 {node.lineno} 行: {node.func.id} 第 {idx} 个实参用 f32 传给 "
+                        f"{kname}.{params[idx]}（声明 {declared}）")
+
     # S5 zeros_like(None)
     none_vars = set()
     for node in ast.walk(tree):

@@ -767,6 +767,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dk[:, :, sl, :] = dk[:, :, sl, :] + _q4
         kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
         r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
+        print(f"RELAYDBG c={c} |r3|={r3.abs().max():.3e}", flush=True)
         dbeta[:, :, sl] = r1 - Ec * r2 + r3                        # B7 + B8 + B11
         # B3+B11 合成 dgam2，B12 统一乘 Gam 做 rowsum - colsum
         dgam2 = d["dP"].float() * m_m * d["raw"].float() + dl * d["Betac"][:, :, :, None] * kk
