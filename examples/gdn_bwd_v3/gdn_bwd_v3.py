@@ -15,6 +15,8 @@
 dbeta / dg / dh0 尚未接进本文件——形态已分别由 rows / dgss / dh0b 三个探针验证。
 """
 
+import os
+
 import torch
 import tilelang
 import tilelang.language as T
@@ -437,6 +439,13 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     dk = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
     dv = torch.empty(B, H, T_len, DV, dtype=dt, device=dev)
 
+    _DBG = os.environ.get("GDN_V3_DBG") == "1"
+
+    def _step(tag):
+        if _DBG:
+            torch.npu.synchronize()
+            print(f"V3DBG c@{tag}", flush=True)
+
     for c in range(NC):                              # D23: one launch per chunk
         sl = slice(c * C, (c + 1) * C)
         Qc = q[:, :, sl, :]
@@ -450,20 +459,20 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         Betac = beta[:, :, sl]
         Gamc = ws_gam[:, :, c, :, :]
 
-        bv = k_scale(Vc, Betac)                      # beta .* V
-        u0 = k_ab(Ac, bv)                            # U0 = A beta V
-        bek = k_sbe(Kc, Betac, Ec)                   # beta .* E .* K
-        wm = k_ab_k(Ac, bek)                         # W = A bek
-        wh = k_wh(wm, Hc)                            # W H^T
-        vnew = k_sub(u0, wh)                         # Vnew
+        bv = k_scale(Vc, Betac); _step("scale")      # beta .* V
+        u0 = k_ab(Ac, bv); _step("ab")               # U0 = A beta V
+        bek = k_sbe(Kc, Betac, Ec); _step("sbe")     # beta .* E .* K
+        wm = k_ab_k(Ac, bek); _step("ab_k")          # W = A bek
+        wh = k_wh(wm, Hc); _step("wh")               # W H^T
+        vnew = k_sub(u0, wh); _step("sub")           # Vnew
 
         # raw/P 只在 relay 的 `P^T dO` 里需要（B1）；当前的 dq 链用不到，
         # 先跳过以免每次 launch 白算一次 [C,C] 的 gate。
-        dP = k_dp(DOc, vnew)
-        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc)
-        dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
-        dk[:, :, sl, :] = k_dk(dqkt, Qc)
-        dv[:, :, sl, :] = k_scale(k_dv(Ac, vnew), Betac)
+        dP = k_dp(DOc, vnew); _step("dp")
+        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
+        dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc); _step("dq")
+        dk[:, :, sl, :] = k_dk(dqkt, Qc); _step("dk")
+        dv[:, :, sl, :] = k_scale(k_dv(Ac, vnew), Betac); _step("dv")
     torch.npu.synchronize()
     return dq, dk, dv
 
@@ -548,8 +557,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         vnew = k_sub(u0, wh)
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
-        dP = k_dp(DOc, vnew)
-        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc)
+        dP = k_dp(DOc, vnew); _step("dp")
+        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, vnew=vnew, wm=wm, P=_P, dqkt=dqkt, edo=edo,
