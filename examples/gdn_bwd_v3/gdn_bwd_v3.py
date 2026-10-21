@@ -771,6 +771,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         qh = k_tb_qh(d["Qc"], d["Hc"])
         de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * (-r2)
         dgam = dgam + Ec * de
+        if _DBG:
+            print(f"RELAYDBG c={c} |da|={da.abs().max():.3e} |dl|={dl.abs().max():.3e} "
+                  f"|kk|={kk.abs().max():.3e} |de|={de.abs().max():.3e} "
+                  f"|dgam|={dgam.abs().max():.3e} carry={carry.abs().max():.3e} "
+                  f"|r1|={r1.abs().max():.3e} |r2|={r2.abs().max():.3e}", flush=True)
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
         d["delta_next"] = delta
