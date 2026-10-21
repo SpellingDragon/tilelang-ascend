@@ -462,7 +462,9 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
 
         bv = k_scale(Vc, Betac); _step("scale")      # beta .* V
         u0 = k_ab(Ac, bv); _step("ab")               # U0 = A beta V
-        bek = k_sbe(Kc, Betac, Ec); _step("sbe")     # beta .* E .* K
+        # (beta .* E) 在 host 合成为一个 fp32 向量，复用已验证的 k_scale：
+        # scale_be 版本在同一 kernel 里读两个 1-D buffer，真机 507015。
+        bek = k_scale(Kc, Betac * Ec); _step("sbe")
         wm = k_ab_k(Ac, bek); _step("ab_k")          # W = A bek
         wh = k_wh(wm, Hc); _step("wh")               # W H^T
         vnew = k_sub(u0, wh); _step("sub")           # Vnew
@@ -553,7 +555,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         Hc, Betac, Gamc = ws_h[:, :, c, :, :], beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
         u0 = k_ab(Ac, bv)
-        bek = k_sbe(Kc, Betac, Ec)
+        bek = k_scale(Kc, Betac * Ec)
         wm = k_ab_k(Ac, bek)
         wh = k_wh(wm, Hc)
         vnew = k_sub(u0, wh)
