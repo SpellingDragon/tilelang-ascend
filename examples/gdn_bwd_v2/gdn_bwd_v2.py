@@ -667,7 +667,7 @@ def gdn_bwd_v2_scan2a(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # bek_l1 -> W_hh = A beK_hh -> -W_hh -> workspace_w (B6 sign
                 # fold kept at the derivation site, S7e :625 form)
                 T.copy(A[b, h, cc * C, 0], a_l1)
-                for hh in range(bk_num):  # python range: w_a_l1 is a list
+                for hh in range(bk_num):  # compile-time unroll (D13)
                     T.copy(K[b, h, cc * C, hh * BK], io_xk)
                     T.copy(io_xk, xk_ub)
                     for (i, j) in T.Parallel(C, BK):
