@@ -682,6 +682,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     carry = torch.zeros(B, H, dtype=torch.float32, device=dev)
+    m_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
     k_suffix = gdn_v3_suffix(B, H, C)
     k_tb_qh = gdn_v3_tb(B, H, C, DV, DK)     # qh = q @ H_in^T
     cache = []
@@ -766,7 +767,6 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dbeta[:, :, sl] = dbeta[:, :, sl] + r3
         # ---- B3/B9/B10/B11/B13/B14: dgam 与 dg ----
         gam2 = d["Gamc"].float()
-        m_m = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
         dgam = (d["dP"].float() * m_m * d["raw"].float()).sum(-1)          # B3
         dgam = dgam - dth * d["th"].float()                                # B10 第一项
         dgam[:, :, -1] += (dth * d["th"].float()).sum(-1)                   # B10 第二项
@@ -774,7 +774,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         de = (d["DOc"].float() * qh.float()).sum(-1) + d["Betac"] * r2      # B5 + B8
         dgam = dgam + (dl * gam2 * kk).sum(-1) - (dl * gam2 * kk).sum(-2)   # B11 → B12
         dgam = dgam + d["Ec"] * de                                         # B13
-        dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * delta.float()).sum((-1, -2))  # B9
+        # B9 用的是「下一个 chunk 的 Delta'」（即 golden 的 dp_rel），不是当前这个
+        dgam[:, :, -1] += d["glast"] * (d["Hc"].float() * nxt_delta.float()).sum((-1, -2))
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
         d["delta_next"] = delta
