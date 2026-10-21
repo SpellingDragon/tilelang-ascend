@@ -32,10 +32,12 @@ def k_mul(B, H, C, DV, dtype="float16", accum="float"):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
+            x16 = T.alloc_ub([C, DV], dtype)
             x32 = T.alloc_ub([C, DV], accum)
             y16 = T.alloc_ub([C, DV], dtype)
             o16 = T.alloc_ub([C, DV], dtype)
-            T.copy(X[b, h, 0, 0], x32)
+            T.copy(X[b, h, 0, 0], x16)   # same-dtype load, then cast in UB
+            T.copy(x16, x32)
             T.copy(Y[b, h, 0, 0], y16)
             for i, j in T.Parallel(C, DV):
                 x32[i, j] = x32[i, j] * T.cast(y16[i, j], accum)
