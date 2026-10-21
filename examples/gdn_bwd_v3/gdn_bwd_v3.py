@@ -740,27 +740,36 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         else:
             # golden 用的是 Kt = th .* K（B1），不是 K
             kt_c = k_scale(d["Kc"], d["th"])              # th 已是 [B,H,C] fp32
-            dvnew = base + k_tb_kt(kt_c, delta)
+            dvnew = base + k_tb_kt(kt_c, delta) + k_tb_kt(kt_c, delta_lo)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn(d["edo"], d["Qc"])
         tw_n = k_ta_dvn(dvnew, d["wm_n"])            # dvnew^T (-W)
         nxt = tq.float() + tw_n.float()              # e_do^T Q - dvnew^T W
         if delta is not None:
             nxt = nxt + d["glast"][:, :, None, None] * delta.float()
-        delta = nxt.to(dt)
+        # Δ' 拆高低位：fp16 每轮舍入一次，c=2/c=3 累积到 1.3e-2（[103]）。
+        # 保持 fp32 的 delta_f32，消费时拆成 hi + lo 各做一次 GEMM（精度 11 -> 22 位）。
+        delta_f32 = nxt
+        delta = delta_f32.to(dt)
+        delta_lo = (delta_f32 - delta.float()).to(dt)
         # 四项各自打印 abs.max，与本地基线对表（3.8~6.3 / 0.13~0.33 / 0~2.5 / 0.38~0.44）
         _dk1 = k_dk(d["dqkt"], d["Qc"])
         print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
-        nxt_delta = (cache[c + 1]["delta_next"] if c < NC - 1
-                     else torch.zeros(B, H, DV, DK, dtype=dt, device=dev))
+        if c < NC - 1:
+            _d32 = cache[c + 1]["delta_f32"]
+            nxt_delta = _d32.to(dt)
+            nxt_lo = (_d32 - nxt_delta.float()).to(dt)
+        else:
+            nxt_delta = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
+            nxt_lo = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
         # H1：DV==C 时 A@X 与 A@[C,N] 同义，优先用已验证的 ab（mm 从未单独验过）
         if c >= NC - 1:
             dkt = torch.zeros_like(dk[:, :, sl, :])
         elif DV == C:
-            dkt = k_ab_dv(d["vnew"], nxt_delta)
+            dkt = k_ab_dv(d["vnew"], nxt_delta) + k_ab_dv(d["vnew"], nxt_lo)
         else:
-            dkt = k_mm(d["vnew"], nxt_delta)
+            dkt = k_mm(d["vnew"], nxt_delta) + k_mm(d["vnew"], nxt_lo)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
@@ -831,6 +840,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
         d["delta_next"] = delta
+        d["delta_f32"] = delta_f32
         if c == 0:
             dh0 = delta
     if _oneshot:
