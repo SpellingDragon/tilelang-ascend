@@ -243,10 +243,12 @@ def gdn_v3_sub(B, H, C, DV, dtype="float16", accum="float"):
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
+            u16 = T.alloc_ub([C, DV], dtype)
             u32 = T.alloc_ub([C, DV], accum)
             w16 = T.alloc_ub([C, DV], dtype)
             o16 = T.alloc_ub([C, DV], dtype)
-            T.copy(U0[b, h, 0, 0], u32)
+            T.copy(U0[b, h, 0, 0], u16)   # same-dtype load, cast in UB
+            T.copy(u16, u32)
             T.copy(WH[b, h, 0, 0], w16)
             for i, j in T.Parallel(C, DV):
                 u32[i, j] = u32[i, j] - T.cast(w16[i, j], accum)
