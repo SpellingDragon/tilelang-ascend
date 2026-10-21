@@ -1161,6 +1161,13 @@ def gdn_bwd_v2_scan2b(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="
                 # ---- BV blocks: B7 ----
                 for bv in T.serial(bv_num):
                     # dVnew block from the boundary (GM->L1 direct, main dtype)
+                    # boundary in: GM -> L1 direct (v1 path). The host
+                    # recompute beta .* (A^T dv_card) matches golden at 4.2e-4,
+                    # so the formula and the stored value are right; what
+                    # scan2b gets here is not (dv absmax 1.748 vs 0.485, still
+                    # finite). A UB hop was tried and re-introduced NaNs
+                    # because io_bq2 is reused by the V/beta loads in the same
+                    # block -- the read must be probed, not rerouted.
                     T.copy(WS_DV[b, h, cc * C, bv * BV], bq_l1)
                     # beta .* V -> bv_l1
                     T.tile.fill(wh2_ub, 0.0)
