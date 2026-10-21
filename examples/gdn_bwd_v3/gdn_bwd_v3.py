@@ -206,7 +206,7 @@ def gdn_v3_scale(B, H, C, N, dtype="float16", accum="float"):
     return main
 
 
-@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+@tilelang.jit(out_idx=[3], pass_configs=_PASS)   # Y is the 4th param; E (fp32) is an input
 def gdn_v3_scale_be(B, H, C, N, dtype="float16", accum="float"):
     """Y = (beta .* E) .* X   （βEK 用；E 为 per-token fp32）"""
 
