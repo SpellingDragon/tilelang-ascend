@@ -755,10 +755,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64):
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         if c < NC - 1:
             nxt_delta = cache[c + 1]["delta_f32"].to(dt)
-            nxt_lo = None
         else:
             nxt_delta = torch.zeros(B, H, DV, DK, dtype=dt, device=dev)
-            nxt_lo = None
         # H1：DV==C 时 A@X 与 A@[C,N] 同义，优先用已验证的 ab（mm 从未单独验过）
         if c >= NC - 1:
             dkt = torch.zeros_like(dk[:, :, sl, :])
