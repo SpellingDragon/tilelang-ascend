@@ -91,15 +91,23 @@ def main():
     got = v3_vnew(B, H, NC, C, DV, DK)(t_u0, t_w, t_h).float().cpu().numpy()[0, 0]
     torch.npu.synchronize()
 
+    refs = [np.asarray(cache[c]["vnew"], np.float64) for c in range(NC)]
     ok = True
     for c in range(NC):
-        ref = np.asarray(cache[c]["vnew"], np.float64)
-        # vnew = u0 - W H^T  (cache's w_mat is +W, the kernel gets -W)
         cur = np.asarray(got[c], np.float64)
+        ref = refs[c]
         d = float(np.abs(cur - ref).max())
         rel = d / (float(np.abs(ref).max()) + 1e-30)
         print(f"VNEW3 cc={c} maxdiff={d:.3e} goldmax={float(np.abs(ref).max()):.3e} rel={rel:.3e}")
         ok &= rel < 5e-3
+    # cross-check for chunk misalignment: is got[c] actually ref[c']?
+    for c in range(NC):
+        cur = np.asarray(got[c], np.float64)
+        row = []
+        for cp in range(NC):
+            g = refs[cp]
+            row.append(float(np.abs(cur - g).max()) / (float(np.abs(g).max()) + 1e-30))
+        print("VNX row=%d " % c + " ".join("%.2e" % x for x in row))
     print("VNEW3 verdict=%s" % ("PASS" if ok else "FAIL"))
     print("VNEW3-DONE")
 
