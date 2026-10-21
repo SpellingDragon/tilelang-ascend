@@ -63,6 +63,7 @@ def run_case(B, H, T_len, DK, DV, C, check_dkdv):
 
 def run_relay(B, H, T_len, DK, DV, C):
     """多 chunk 的完整 relay：dk/dv/dh0 都应对上 golden。"""
+    print(f"RELAYCASE T={T_len} C={C}", flush=True)
     torch.manual_seed(7)
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
     dev, dt = "npu", torch.float16
@@ -87,6 +88,11 @@ def run_relay(B, H, T_len, DK, DV, C):
     passed0, ratio0, max_abs0 = check_precision(dh0.cpu().float().reshape(B, H, DV, DK), ref0, "float16")
     print(f"RELAY dh0 rel={max_abs0:.3e} verdict={'PASS' if passed0 else 'FAIL'} ratio={ratio0:.4f}")
     ok &= passed0
+    # 落盘 dk/dq，供本地做逐元素比对（四项的 abs.max 对不上"小元素"的绝对误差）
+    import os as _os
+    _os.makedirs("/tmp", exist_ok=True)
+    np.save(f"/tmp/w11dump_dk_T{T_len}.npy", dk.cpu().float().numpy())
+    np.save(f"/tmp/w11dump_dq_T{T_len}.npy", dq.cpu().float().numpy())
     print("RELAY-DONE all=%s" % ("PASS" if ok else "FAIL"))
     return ok
 
