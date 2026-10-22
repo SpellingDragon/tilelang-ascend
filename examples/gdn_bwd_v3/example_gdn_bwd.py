@@ -901,6 +901,12 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     k_dk = gdn_v3_dk(B, H, C, DK)
     k_dv = gdn_v3_dv(B, H, C, DV)
     k_scale = gdn_v3_scale(B, H, C, DV)
+    # A1：Kc 的宽度是 DK，不能复用按 DV 声明的 k_scale —— JITKernel 不校验形状，
+    # T.copy 按声明形状推 extent ⇒ DK≠DV 时按错 stride 读、静默错（真实 GDN DK=128/C=64）
+    k_scale_k = gdn_v3_scale(B, H, C, DK)
+    k_raw = gdn_v3_raw(B, H, C, DK)
+    k_gate = gdn_v3_gate(B, H, C)
+    k_ta = gdn_v3_ta(B, H, C, C, DV)
     k_ge = gdn_v3_gate_edo(B, H, C, DV)
 
     dq = torch.empty(B, H, T_len, DK, dtype=dt, device=dev)
@@ -929,20 +935,25 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
 
         bv = k_scale(Vc, Betac); _step("scale")      # beta .* V
         # -W 的构造：A @ (-(beta E) K) = -W，于是 Vnew 可以在一个 L0C 里累加出来
-        bek_n = k_scale(Kc, -Betac * Ec); _step("sbe")
+        bek_n = k_scale_k(Kc, -Betac * Ec); _step("sbe")
         wm_n = k_ab_k(Ac, bek_n); _step("ab_k")      # -W
         vnew32 = k_vnew(Ac, bv, wm_n, Hc); _step("vnew")
         # vnew 以 fp32 落 GM；两个消费点各用 hi/lo 两次 GEMM（[108]）
         v_hi = vnew32.to(dt)
         v_lo = (vnew32 - v_hi.float()).to(dt)
 
-        # raw/P 只在 relay 的 `P^T dO` 里需要（B1）；当前的 dq 链用不到，
-        # 先跳过以免每次 launch 白算一次 [C,C] 的 gate。
+        # P = (QK^T) .* Gam .* M 不是 dq 链的输入（dq 用 dP），只在 dv 链的
+        # `dvnew = P^T dO`（golden B1）里需要，因此放到下面 dv 那一步再算。
         dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
         dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc); _step("dq")
         dk[:, :, sl, :] = k_dk(dqkt, Qc); _step("dk")
-        dv[:, :, sl, :] = k_scale(k_dv(Ac, v_hi), Betac); _step("dv")
+        # A2：dv = beta .* (A^T dvnew)，dvnew 是**反向**的 `P^T dO`（golden B1），
+        # 不是前向的 Vnew。精简版没有 Delta' 反向扫描：单 chunk（Delta'_{c+1}=0）
+        # 与 golden 一致，多 chunk 缺 `Kt Delta'^T` 项（见文件头「能力边界」）。
+        _P = k_gate(k_raw(Qc, Kc), Gamc, msk_m); _step("p")   # P = (QK^T) .* Gam .* M
+        dvnew = k_ta(_P, DOc); _step("dvnew")                 # dvnew = P^T dO
+        dv[:, :, sl, :] = k_scale(k_dv(Ac, dvnew), Betac); _step("dv")
     torch.npu.synchronize()
     return dq, dk, dv
 
@@ -969,6 +980,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     B, H, T_len, DK = q.shape
     DV = v.shape[-1]
     C = chunk_size
+    # A5：尾块未处理（NC 按 ceil 取会读到越界），入口直接拒绝，禁止静默截断
+    assert T_len % C == 0, f"T_len={T_len} 必须是 C={C} 的整数倍"
     NC = (T_len + C - 1) // C
     dt = q.dtype
     dev = q.device
@@ -992,6 +1005,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     k_dq = gdn_v3_dq(B, H, C, DK, DV)
     k_dk = gdn_v3_dk(B, H, C, DK)
     k_scale = gdn_v3_scale(B, H, C, DV)
+    # A1：喂 Kc/t2n 的三处（bek_n / kt_c / _q2）宽度是 DK，必须用按 DK 声明的实例
+    k_scale_k = gdn_v3_scale(B, H, C, DK)
     k_gate = gdn_v3_gate(B, H, C)
     k_ge = gdn_v3_gate_edo(B, H, C, DV)
     k_ta = gdn_v3_ta(B, H, C, C, DV)      # P^T dO
@@ -1005,7 +1020,6 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     k_ta_cc = gdn_v3_ta(B, H, C, C, C)     # A^T da
     k_tb_cc = gdn_v3_tb(B, H, C, C, C)     # (A^T da) A^T
     k_rawk = gdn_v3_raw(B, H, C, DK)       # KKt = K K^T（同一形态）
-    k_ab_cc = gdn_v3_ab(B, H, C, C)
     k_ab_dv = gdn_v3_ab(B, H, C, DV)        # (dx + dx^T) K
     msk_j = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev), -1)
     k_mul = gdn_v3_mul(B, H, C, DK)
@@ -1021,7 +1035,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     dbeta = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     dg = torch.empty(B, H, T_len, dtype=torch.float32, device=dev)
     # GDN_V3_DK_SPLIT=1 时额外产出 dk 的四项单独结果，用于一次车定位是哪一项错
-    _split = os.environ.get("GDN_V3_DK_SPLIT", "1") == "1"   # 环境变量两次未生效，先默认开
+    # A4：默认关（开启会多返回 1 项并多占 4 份 [B,H,T,DK] 显存），排查时显式置 1
+    _split = os.environ.get("GDN_V3_DK_SPLIT", "0") == "1"
     # dk 的写入方式：默认"逐 chunk 切片写"；GDN_V3_ONESHOT_WRITE=1 时先收集再 cat，
     # 用来排除"循环内多次 dk[:,:,sl,:]= 的路径问题"（多占一份 [B,H,T,DK] 内存）
     _oneshot = os.environ.get("GDN_V3_ONESHOT_WRITE", "0") == "1"
@@ -1034,7 +1049,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     k_tb_qh = gdn_v3_tb(B, H, C, DV, DK)     # qh = q @ H_in^T
     cache = []
 
-    _DBG = os.environ.get("GDN_V3_DBG", "1") == "1"   # 临时默认开，取到中间量后改回
+    # A4：默认关（开着每 chunk 9 次 print + 每步 npu.synchronize()），排查时显式置 1
+    _DBG = os.environ.get("GDN_V3_DBG", "0") == "1"
 
     def _step(tag):
         if _DBG:
@@ -1052,7 +1068,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         Betac, Gamc = beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
-        bek_n = k_scale(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它
+        bek_n = k_scale_k(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它
         wm_n = k_ab_k(Ac, bek_n)              # -W
         vnew32 = k_vnew(Ac, bv, wm_n, Hc)
         v_hi = vnew32.to(dt)
@@ -1074,7 +1090,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     for c in range(NC - 1, -1, -1):
         d = cache[c]
         sl = d["sl"]
-        print(f"RELAYP2 c={c}", flush=True)
+        if _DBG:
+            print(f"RELAYP2 c={c}", flush=True)
         # dvnew = P^T dO + Kt Delta'^T
         base = k_ta(d["P"], d["DOc"])
         # Δ' 一律从 cache 的 fp32 现派生 hi/lo，不在循环间保留变量（避免"跨迭代变量"）
@@ -1082,7 +1099,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             dvnew = base
         else:
             _hi = cache[c + 1]["delta_f32"].to(dt)
-            kt_c = k_scale(d["Kc"], d["th"])              # golden 用 Kt = th .* K（B1）
+            kt_c = k_scale_k(d["Kc"], d["th"])            # golden 用 Kt = th .* K（B1）
             dvnew = base + k_tb_kt(kt_c, _hi)
         # Delta'_c = e_do^T Q - dvnew^T W + glast * Delta'
         tq = k_ta_dvn32(d["edo"], d["Qc"])           # e_do^T Q      (fp32)
@@ -1094,7 +1111,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         delta_f32 = nxt
         # 四项各自打印 abs.max，与本地基线对表（3.8~6.3 / 0.13~0.33 / 0~2.5 / 0.38~0.44）
         _dk1 = k_dk(d["dqkt"], d["Qc"])
-        print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
+        if _DBG:
+            print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
         if c < NC - 1:
             nxt_delta = cache[c + 1]["delta_f32"].to(dt)
@@ -1110,7 +1128,8 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
         _q3 = (_th4 * dkt.float()).to(dt)
-        print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
+        if _DBG:
+            print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
         # 四项各自是 fp16 kernel 的输出；累加放在 fp32，最后一次性 cast，
         # 避免 3 次 fp16 加法（每次 ulp≈4e-3）把 dk 的误差推到 1e-2 量级
         _dk_acc = _dk1.float() + _q3.float()
@@ -1122,8 +1141,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         dw = k_mm(dvnew, d["Hc"])                       # [B,H,C,DK]
         t2n = k_ta_cdk(d["Ac"], dw)                     # A^T dw（含负号）
         neg_be = -d["Betac"] * d["Ec"]                  # -(beta E)
-        _q2 = k_scale(t2n, neg_be)
-        print(f"RELAYQ c={c} q2={_q2.abs().max():.4e}", flush=True)
+        _q2 = k_scale_k(t2n, neg_be)
+        if _DBG:
+            print(f"RELAYQ c={c} q2={_q2.abs().max():.4e}", flush=True)
         _dk_acc = _dk_acc + _q2.float()
         # ---- 以下按 golden 的 B7/B8/B11/B12/B10/B13/B9 顺序组装 ----
         gam2 = d["Gamc"].float()
@@ -1137,8 +1157,9 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         dl = msk_j[None, None] * (-o_)                             # [B,H,C,C] fp32
         dx = dl * d["Betac"][:, :, :, None] * gam2
         dxs = (dx + dx.transpose(-1, -2)).to(dt)
-        _q4 = k_ab_cc(dxs, d["Kc"])
-        print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
+        _q4 = k_ab_k(dxs, d["Kc"])
+        if _DBG:
+            print(f"RELAYQ c={c} q4={_q4.abs().max():.4e}", flush=True)
         _dk_full = (_dk_acc + _q4.float()).to(dt)
         if _oneshot:
             dk_buf.append(_dk_full)             # 收集，循环后一次 cat 写回
@@ -1151,15 +1172,18 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             dk_parts["q4"][:, :, sl, :] = _q4
         kk = k_rawk(d["Kc"], d["Kc"]).float()                      # KKt
         r3 = (dl * gam2 * kk).sum(-1)                              # B11 的 dbeta 项
-        print(f"RELAYDBG c={c} |r3|={r3.abs().max():.3e}", flush=True)
+        if _DBG:
+            print(f"RELAYDBG c={c} |r3|={r3.abs().max():.3e}", flush=True)
         dbeta[:, :, sl] = r1 - Ec * r2 + r3                        # B7 + B8 + B11
         # B3+B11 合成 dgam2，B12 统一乘 Gam 做 rowsum - colsum
         dgam2 = d["dP"].float() * m_m * d["raw"].float() + dl * d["Betac"][:, :, :, None] * kk
         w12 = dgam2 * gam2
         dgam = w12.sum(-1) - w12.sum(-2)                           # B12
-        # B10：只保留 -dth*th。golden 里还有 `dgam[m-1] += sum(dth*th)` 与 B9 的
-        # `glast*<H_in,Delta'>`，但逐项对照证明它们对 dg 无可观测贡献（本地复刻：
-        # 加上去是 6.5e-1，不加是 1.2e-13），因此这里不加。
+        # B10：只保留 -dth*th。`carry`（跨 chunk 归约）与 golden 的
+        # `dgam[m-1] += sum(dth*th)` 补项是**同一恒等式的两种写法，只能取其一**：
+        # 补上会双计，导致 dg 错 63%（fp64 复刻：只加 carry rel=6.5e-15、只加 m-1
+        # 两项 rel=3.6e-15、两者皆无或皆有 rel=0.634；两项实测量级 1.41）。
+        # 因此这里不加 m-1 补项。
         th = d["th"].float()
         dgam = dgam - dth * th
         # B13: dgam += E .* dE
@@ -1167,13 +1191,15 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         de1 = (d["DOc"].float() * qh.float()).sum(-1)
         de2 = d["Betac"] * (-r2)
         de = de1 + de2
-        print(f"RELAYDE c={c} de1m={de1.mean():+.4e} de2m={de2.mean():+.4e} "
-              f"de_em={(Ec * de).sum().item():+.4e}", flush=True)
+        if _DBG:
+            print(f"RELAYDE c={c} de1m={de1.mean():+.4e} de2m={de2.mean():+.4e} "
+                  f"de_em={(Ec * de).sum().item():+.4e}", flush=True)
         dgam = dgam + Ec * de
-        print(f"RELAYDBG c={c} |da|={da.abs().max():.3e} |dl|={dl.abs().max():.3e} "
-              f"|kk|={kk.abs().max():.3e} |de|={de.abs().max():.3e} "
-              f"|dgam|={dgam.abs().max():.3e} carry={carry.abs().max():.3e} "
-              f"|r1|={r1.abs().max():.3e} |r2|={r2.abs().max():.3e}", flush=True)
+        if _DBG:
+            print(f"RELAYDBG c={c} |da|={da.abs().max():.3e} |dl|={dl.abs().max():.3e} "
+                  f"|kk|={kk.abs().max():.3e} |de|={de.abs().max():.3e} "
+                  f"|dgam|={dgam.abs().max():.3e} carry={carry.abs().max():.3e} "
+                  f"|r1|={r1.abs().max():.3e} |r2|={r2.abs().max():.3e}", flush=True)
         dg[:, :, sl] = k_suffix(dgam, carry)
         carry = carry + dgam.sum(-1)
         d["delta_f32"] = delta_f32

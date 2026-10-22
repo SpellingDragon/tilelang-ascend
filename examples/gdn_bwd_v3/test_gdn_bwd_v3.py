@@ -50,16 +50,31 @@ def run_case(B, H, T_len, DK, DV, C, check_dkdv):
     ok = True
     for item in ("dq",):
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
-        passed, ratio, max_abs = check_precision(got[item], ref, dtype)
+        idt = "float32" if item in FP32_ITEMS else dtype
+        passed, ratio, max_abs = check_precision(got[item], ref, idt)
         print(f"V3 {item} rel= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
         ok &= passed
     if check_dkdv:   # 数值参考，不 gate
         for item in ("dk", "dv"):
             ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
-            _p, ratio, max_abs = check_precision(got[item], ref, dtype)
+            idt = "float32" if item in FP32_ITEMS else dtype
+            _p, ratio, max_abs = check_precision(got[item], ref, idt)
             print(f"V3 {item} (partial, not gated) rel={max_abs:.3e} ratio={ratio:.4f}")
     print("V3-DONE all=%s" % ("PASS" if ok else "FAIL"))
     return ok
+
+
+def _embed_block(block, C):
+    """把 m×m 的 A 块嵌进 C×C 单位阵（B3：尾块 m<C，否则 np.stack 先被形状不齐打断）。
+
+    `A = (I + L)^-1` 只在块内非平凡；把尾块看作"C-m 行为零的满块"时 A 正是
+    左上角 A_m + 其余单位阵。T%C!=0 由 relay 入口断言拒绝，这里只保证构造本身
+    不再是第一个失败点（原实现按 T//C 建块，relay 读 [:, :, 1] 会先 IndexError）。
+    """
+    out = np.eye(C)
+    m = block.shape[0]
+    out[:m, :m] = block
+    return out
 
 
 def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
@@ -74,16 +89,19 @@ def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
     import os as _os
     _hs = None
     if _os.environ.get("GDN_V3_GOLDEN_H", "1") == "1":
+        # B3：按 ceil(T/C) 建（relay 的 NC 也是 ceil）——此前用 T//C，T=65 时只建 1 块，
+        # relay 读 hs_override[:,:,1] 必 IndexError，把"拒绝"伪装成 relay 的越界。
         _q = q.double().numpy()[0, 0]
         _, _cache = _np_chunk_fwd(T_len, DK, DV, _q, k.double().numpy()[0, 0],
                                   v.double().numpy()[0, 0], beta.double().numpy()[0, 0],
                                   g.double().numpy()[0, 0], h0.double().numpy()[0, 0], C)
         _hs = torch.from_numpy(
-            np.stack([np.asarray(_cache[i]["hin"], np.float64) for i in range(T_len // C)])
+            np.stack([np.asarray(_cache[i]["hin"], np.float64) for i in range(-(-T_len // C))])
             .astype(np.float16))[None, None].to(dev)
         print(f"RELAYH T={T_len} 用 golden H_in（替换 scan1 的输出）", flush=True)
         _as = torch.from_numpy(
-            np.stack([np.asarray(_cache[i]["a_mat"], np.float64) for i in range(T_len // C)])
+            np.stack([_embed_block(np.asarray(_cache[i]["a_mat"], np.float64), C)
+                      for i in range(-(-T_len // C))])
             .astype(np.float16))[None, None].to(dev)
         print(f"RELAYA T={T_len} 用 golden A（替换 solve_a 的输出）", flush=True)
     else:
@@ -103,7 +121,8 @@ def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
     _gate = gate if gate is not None else ("dq", "dk", "dv", "dbeta", "dg")
     for item, val in (("dq", dq), ("dk", dk), ("dv", dv), ("dbeta", dbeta), ("dg", dg)):
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
-        passed, ratio, max_abs = check_precision(val.cpu().float(), ref, "float16")
+        idt = "float32" if item in FP32_ITEMS else "float16"
+        passed, ratio, max_abs = check_precision(val.cpu().float(), ref, idt)
 
         _tag = "gated" if item in _gate else "record-only"
         _rel = max_abs / (float(np.abs(ref).max()) + 1e-30)
@@ -134,16 +153,34 @@ def _level():
 GATED_ALL = ("dq", "dk", "dv", "dbeta", "dg")
 # 多 chunk 的已知限制（tasks 9.6）：dk 差 2.6x、dbeta 差 1.2x —— 只记录不阻塞
 GATED_MULTI = ("dq", "dv", "dh0")   # dg 在多 chunk 的 rel 也超 5e-3，降 record-only
+# B2：比较口径按 item 选 —— dq/dk/dv/dh0 随主 dtype（fp16），dbeta/dg 是 fp32 输出
+# （v2 的 `_FP32_ITEMS` 同款；此前全用 fp16 口径 = max_abs_limit 1e-1，判据虚宽）
+FP32_ITEMS = ("dbeta", "dg")
 
 
 def _run_case_expect_reject(name, fn):
-    """L2：非法输入应被拒绝。抛异常 = [BOUNDARY_PASS]，静默接受 = [BOUNDARY_WARN]。"""
+    """L2：非法输入应被拒绝（B3：去掉"任何异常都算正确拒绝"的巧合）。
+
+    只接受 relay 入口的 `assert T_len % C == 0`（AssertionError）；其它类型
+    （如 `_hs` 越界的 IndexError）说明拒绝发生在别处，一律 `[BOUNDARY_FAIL]`。
+    返回值参与 `run_stubs` → `main` 的 ok（B1：L2 失败必须影响退出码）。
+    """
     try:
         fn()
-    except Exception as e:                                # noqa: BLE001
-        print(f"[BOUNDARY_PASS] l2 {name}: 正确拒绝 ({type(e).__name__})", flush=True)
-        return
-    print(f"[BOUNDARY_WARN] l2 {name}: 非法输入未被拒绝（静默接受）", flush=True)
+    except AssertionError as e:                            # 口径断言：T % C == 0
+        print(f"[BOUNDARY_PASS] l2 {name}: 正确拒绝 (AssertionError `T_len % C == 0`: "
+              f"{_first_line(e)})", flush=True)
+        return True
+    except Exception as e:                                 # noqa: BLE001
+        print(f"[BOUNDARY_FAIL] l2 {name}: 拒绝原因不是 T%C 断言 "
+              f"({type(e).__name__}: {_first_line(e)})", flush=True)
+        return False
+    print(f"[BOUNDARY_FAIL] l2 {name}: 非法输入未被拒绝（静默接受）", flush=True)
+    return False
+
+
+def _first_line(exc):
+    return str(exc).splitlines()[0] if str(exc) else "<no message>"
 
 
 def _run_boundary_case(name, dtype, fn):
@@ -161,24 +198,32 @@ def _run_boundary_case(name, dtype, fn):
 def run_stubs(level):
     """L1/L2/Boundary 三层（场景 B：填充桩体，不改 main 与 --level 接口）。
 
-    L1 [PRECISION_*] 阻塞：
+    L1 [PRECISION_*] 阻塞：横幅**在 run_relay 之后**按该 case 的真实 ok 打印（B1）：
       - T=64（单 chunk）：六项全 gate —— 已实测 1.07e-3~3.16e-4
       - T=128/192（多 chunk）：只 gate dq/dv/dg/dh0；dk/dbeta 打 record-only
         （已知限制：dk 2.6x、dbeta 1.2x，见 tasks 9.6）
-      - T=257（非整除）：v3 目前按 `T // C` 取 chunk 数，尾块未处理 ⇒ 预期 FAIL
-        （这条同时是 L2 的"应拒绝而未拒绝"证据）
-    L2 [BOUNDARY_*] 非阻塞：非整除 T 应被拒绝（当前静默截断）
+    L2 [BOUNDARY_*] 阻塞：非整除 T 由 relay 入口 `assert T_len % C == 0` 拒绝（B3），
+      只接受 AssertionError；其它异常 / 静默接受一律 FAIL
     Boundary [BOUNDARY_*] 非阻塞：dO 注入 NaN/Inf，位置敏感比较
+
+    返回值 `ok` 参与 `main` 的 `ok`（B1：此前被丢弃 ⇒ `--level l1` 恒 PASS 且 exit 0）。
     """
+    ok = True
     if level == "l1":
-        print("[PRECISION_PASS] l1 T=64 单 chunk（六项 gate）", flush=True)
-        run_relay(1, 1, 64, 64, 64, 64, gate=GATED_ALL)
-        print("[PRECISION_PASS] l1 T=128 多 chunk（dk/dbeta record-only）", flush=True)
-        run_relay(1, 1, 128, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
-        print("[PRECISION_PASS] l1 T=192 多 chunk（dk/dbeta record-only）", flush=True)
-        run_relay(1, 1, 192, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
+        _ok = run_relay(1, 1, 64, 64, 64, 64, gate=GATED_ALL)
+        print(("[PRECISION_PASS] " if _ok else "[PRECISION_FAIL] ")
+              + "l1 T=64 单 chunk（六项 gate）", flush=True)
+        ok &= _ok
+        _ok = run_relay(1, 1, 128, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
+        print(("[PRECISION_PASS] " if _ok else "[PRECISION_FAIL] ")
+              + "l1 T=128 多 chunk（dk/dbeta record-only）", flush=True)
+        ok &= _ok
+        _ok = run_relay(1, 1, 192, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
+        print(("[PRECISION_PASS] " if _ok else "[PRECISION_FAIL] ")
+              + "l1 T=192 多 chunk（dk/dbeta record-only）", flush=True)
+        ok &= _ok
     elif level == "l2":
-        _run_case_expect_reject(
+        ok &= _run_case_expect_reject(
             "T=65 非整除 C=64",
             lambda: run_relay(1, 1, 65, 64, 64, 64, gate=()))
     elif level == "boundary":
@@ -198,7 +243,7 @@ def run_stubs(level):
         _run_boundary_case("dq_inf", "float16", _inj(float("inf")))
         _run_boundary_case("dq_neg_inf", "float16", _inj(float("-inf")))
         _run_boundary_case("dq_nan", "float16", _inj(float("nan")))
-
+    return ok
 
 
 def main():
@@ -212,7 +257,7 @@ def main():
         ok &= run_relay(1, 1, 256, 64, 64, 64)
     for extra in ("l1", "l2", "boundary"):
         if level in (extra, "all"):
-            run_stubs(extra)
+            ok &= run_stubs(extra)      # B1：此前丢弃返回值 ⇒ l1/l2 的失败不影响退出码
     print(f"LEVEL {level} ok={ok}")
     return 0 if ok else 1
 
