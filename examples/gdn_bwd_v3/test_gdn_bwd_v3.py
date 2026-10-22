@@ -111,11 +111,18 @@ def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
         beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=C,
         hs_override=_hs, a_override=_as)
     dq, dk, dv, dbeta, dg, dh0 = _out[:6]
-    if len(_out) == 7:      # GDN_V3_DK_SPLIT=1：把四项各自与 golden 比
-        for k, v_part in _out[6].items():
-            ref = np.concatenate([_golden_item(gold, "dk", b) for b in range(B)], axis=0)
-            _p, ratio, max_abs = check_precision(v_part.cpu().float(), ref, "float16")
-            print(f"DKPART {k} rel={max_abs:.3e} ratio={ratio:.4f}")
+    if len(_out) == 7:
+        # GDN_V3_DK_SPLIT=1：做**结构性**诊断，不与完整 dk 比（单项 vs 完整天生不像）。
+        # ① 四项之和是否等于 dk（验证拆分完备）；② 各项自身的 abs_max（找把 dk 抬上去的那项）。
+        _parts = _out[6]
+        _tot = sum(p.float() for p in _parts.values())
+        _sum_diff = float((_tot - dk.float()).abs().max())
+        print(f"DKPART sum_vs_full maxdiff={_sum_diff:.3e}  (应≈0，否则拆分不完备)", flush=True)
+        _dm = float(dk.float().abs().max())
+        for k, v_part in _parts.items():
+            _pm = float(v_part.float().abs().max())
+            print(f"DKPART {k} abs_max={_pm:.3e}  dk_abs_max={_dm:.3e}  ratio={_pm / max(_dm, 1e-30):.2f}x",
+                  flush=True)
     torch.npu.synchronize()
     ok = True
     _gate = gate if gate is not None else ("dq", "dk", "dv", "dbeta", "dg")
