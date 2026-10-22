@@ -97,7 +97,9 @@ def check_file(path: str) -> list[str]:
         copies = []
         for node in ast.walk(main):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "copy" and len(node.args) == 2):
+                    and node.func.attr == "copy"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"
+                    and len(node.args) == 2):
                 copies.append((_base_name(node.args[0]), _base_name(node.args[1])))
         for src_base, dst_base in copies:
             if src_base:
@@ -125,7 +127,9 @@ def check_file(path: str) -> list[str]:
         # S2 T.copy 的 dtype
         for node in ast.walk(main):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "copy" and len(node.args) == 2):
+                    and node.func.attr == "copy"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"
+                    and len(node.args) == 2):
                 a, b = node.args
                 an = a.id if isinstance(a, ast.Name) else None
                 bn = b.id if isinstance(b, ast.Name) else None
@@ -149,6 +153,19 @@ def check_file(path: str) -> list[str]:
         # S4 未定义名字（只查 Name 读取）
         # 闭包：main 在外层 gdn_v3_xxx(B,H,C,...) 里，外层的参数也是已定义
         outer_names = {a.arg for a in outer.args.args}
+        for _n in ast.walk(outer):                     # 外层函数体内的局部赋值/循环变量
+            if isinstance(_n, ast.Assign):
+                for _t in _n.targets:
+                    for _sub in ast.walk(_t):
+                        if isinstance(_sub, ast.Name):
+                            outer_names.add(_sub.id)
+            if isinstance(_n, ast.For):
+                if isinstance(_n.target, ast.Tuple):      # for a, b in ...
+                    for _e in _n.target.elts:
+                        if isinstance(_e, ast.Name):
+                            outer_names.add(_e.id)
+                elif isinstance(_n.target, ast.Name):     # for c in ...
+                    outer_names.add(_n.target.id)
         defined = set(params) | set(ad) | outer_names | {"T", "range", "torch"}
         for node in ast.walk(main):
             if isinstance(node, ast.Assign):
@@ -233,7 +250,9 @@ def check_file(path: str) -> list[str]:
     # S6 T.copy 实参个数
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "copy" and len(node.args) != 2):
+                and node.func.attr == "copy"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"
+                and len(node.args) != 2):
             problems.append(f"S6 第 {node.lineno} 行: T.copy 有 {len(node.args)} 个实参")
 
     return problems
@@ -247,8 +266,9 @@ def _base_name(node: ast.AST):
 
 def _is_one_d(main: ast.FunctionDef, name: str) -> bool:
     for node in ast.walk(main):
-        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) if node.targets else False:
-            if node.targets[0].id == name and isinstance(node.value, ast.Call):
+        if (isinstance(node, ast.Assign) and node.targets
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == name and isinstance(node.value, ast.Call)):
                 v = node.value
                 if v.args and isinstance(v.args[0], ast.List) and len(v.args[0].elts) == 1:
                     return True
