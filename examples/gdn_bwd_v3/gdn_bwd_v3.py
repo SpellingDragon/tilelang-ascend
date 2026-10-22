@@ -816,12 +816,12 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             dkt = k_mm(d["v_hi"], nxt_delta) + k_mm(d["v_lo"], nxt_delta)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
-        _q3 = (_th4 * dkt.float()).to(dt)
+        _q3 = _th4 * dkt.float()          # 跨 chunk 项，保持 fp32 落 GM（T=128 时占 0.29x）
         if _DBG:
             print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
         # 四项各自是 fp16 kernel 的输出；累加放在 fp32，最后一次性 cast，
         # 避免 3 次 fp16 加法（每次 ulp≈4e-3）把 dk 的误差推到 1e-2 量级
-        _dk_acc = _dk1.float() + _q3.float()
+        _dk_acc = _dk1.float() + _q3.float()   # 两项都是 fp32，无额外舍入
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
