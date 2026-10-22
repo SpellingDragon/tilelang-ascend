@@ -178,7 +178,9 @@ def gdn_v3_dk(B, H, C, DK, dtype="float16", accum="float"):
 
     @T.prim_func
     def main(DQKT: T.Tensor([B, H, C, C], dtype), Q: T.Tensor([B, H, C, DK], dtype),  # type: ignore
-             O: T.Tensor([B, H, C, DK], dtype)):  # type: ignore
+             O: T.Tensor([B, H, C, DK], accum)):  # type: ignore
+        # O 走 fp32：q1 = dqkt^T Q 是 dk 的主项（1.03x，见 DKPART 诊断），
+        # 它落 fp16 再与其他三项相加会白白引入一次 2^-11 的舍入。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
