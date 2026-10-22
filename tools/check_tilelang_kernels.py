@@ -116,7 +116,7 @@ def check_file(path: str) -> list[str]:
             for i in out_idx:
                 if i >= len(params):
                     problems.append(f"S1 {fname}: out_idx {i} 越界（只有 {len(params)} 个参数）")
-                elif params[i] in read:
+                elif params[i] in INPUT_NAMES and params[i] in read:
                     problems.append(
                         f"S1 {fname}: out_idx[{i}] 指向 '{params[i]}'，但它在函数体里被读取"
                         f"（输入不能当输出）—— 参数序 {list(enumerate(params))}")
@@ -131,8 +131,7 @@ def check_file(path: str) -> list[str]:
                     and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"
                     and len(node.args) == 2):
                 a, b = node.args
-                an = a.id if isinstance(a, ast.Name) else None
-                bn = b.id if isinstance(b, ast.Name) else None
+                an, bn = _base_name(a), _base_name(b)   # 下标形式（X[b,h,0,0]）也要能取到
                 da = pd.get(an) or ad.get(an)
                 db = pd.get(bn) or ad.get(bn)
                 if da and db and da != db:
@@ -153,6 +152,8 @@ def check_file(path: str) -> list[str]:
         # S4 未定义名字（只查 Name 读取）
         # 闭包：main 在外层 gdn_v3_xxx(B,H,C,...) 里，外层的参数也是已定义
         outer_names = {a.arg for a in outer.args.args}
+        import builtins
+        outer_names |= set(dir(builtins))              # min/float/int 等不应报未定义
         for _n in ast.walk(outer):                     # 外层函数体内的局部赋值/循环变量
             if isinstance(_n, ast.Assign):
                 for _t in _n.targets:
@@ -251,9 +252,10 @@ def check_file(path: str) -> list[str]:
     for node in ast.walk(tree):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "copy"
-                and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"
-                and len(node.args) != 2):
-            problems.append(f"S6 第 {node.lineno} 行: T.copy 有 {len(node.args)} 个实参")
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "T"):
+            nargs = len(node.args) + sum(1 for k in node.keywords if k.arg in ("src", "dst"))
+            if nargs != 2:
+                problems.append(f"S6 第 {node.lineno} 行: T.copy 有 {nargs} 个实参")
 
     return problems
 
