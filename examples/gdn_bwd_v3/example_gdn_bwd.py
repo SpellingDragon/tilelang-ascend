@@ -43,6 +43,7 @@ pass_configs = {
 }
 
 
+@tilelang.jit(out_idx=[1, 2], pass_configs=pass_configs)  # explicit index, see solve_a note
 def gdn_bwd_v2_cumsum(B, H, L, C):
     chunk_num = T.ceildiv(L, C)
 
@@ -87,6 +88,7 @@ def gdn_bwd_v2_cumsum(B, H, L, C):
     return main
 
 
+@tilelang.jit(out_idx=[5], pass_configs=pass_configs)
 def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
     bk_num = T.ceildiv(DK, BK)
@@ -176,6 +178,8 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
     return main
 
 
+@tilelang.jit(out_idx=[6], workspace_idx=[7, 8, 9, 10, 11, 12],
+              pass_configs=pass_configs)
 def gdn_bwd_v2_scan1(B, H, L, DK, DV, C, BV, BK, dtype="float16", accum_dtype="float"):
     chunk_num = T.ceildiv(L, C)
     bv_num = T.ceildiv(DV, BV)
@@ -1317,7 +1321,6 @@ def _np_chunk_bwd(T_len, DK, DV, cache, dO):
             dh0 = dh.copy()
         dp_rel = dh
     return dq, dk, dv, dbeta, dg, dh0
-
 
 
 # ========== Tests ==========
