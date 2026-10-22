@@ -1365,7 +1365,8 @@ if __name__ == "__main__":
         q = torch.randn(B, H, T_len, DK, dtype=dt)
         k = torch.randn(B, H, T_len, DK, dtype=dt)
         v = torch.randn(B, H, T_len, DV, dtype=dt)
-        g = -torch.rand(B, H, T_len, dtype=torch.float32) * 0.05
+        # 每 chunk 的 cumsum 控制在 ~-0.5：Gam=exp(gam_r-gam_c) 才不溢出（见 _case_inputs）
+        g = -torch.rand(B, H, T_len, dtype=torch.float32) / C
         beta = torch.rand(B, H, T_len, dtype=torch.float32)
         h0 = torch.zeros(B, H, DV, DK, dtype=dt)
         do = torch.randn(B, H, T_len, DV, dtype=dt)

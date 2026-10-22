@@ -84,6 +84,11 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None, quantize=False):
         dvnew = p_mat.T @ DOn[sl] + kt @ delta_next.T
         # B2/B3/B4
         dpk = DOn[sl] @ vnew.T
+        if quantize:
+            dpk = _q16(dpk)          # 卡上 k_dp 的输出是 fp16 GM
+        raw = Qn[sl] @ Kn[sl].T
+        if quantize:
+            raw = _q16(raw)          # 卡上 gdn_v3_raw 的输出是 fp16 GM
         dqkt = dpk * gam2 * msk_m
         dq[sl] = dqkt @ Kn[sl] + (e_vec[:, None] * DOn[sl]) @ hin
         # B6/B7/B8
@@ -96,7 +101,14 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None, quantize=False):
         dth = (Kn[sl] * dkt).sum(1)
         # B11
         da = dvnew @ bv.T + dw @ bek.T
-        dl = msk_j * (-(a_mat.T @ da @ a_mat.T))
+        if quantize:                      # 卡上 da 由两次 fp16 GEMM 相加
+            da = _q16(dvnew @ bv.T) + _q16(dw @ bek.T)
+        t_ = a_mat.T @ da
+        o_ = t_ @ a_mat.T
+        if quantize:                      # 卡上 t_/o_ 各是一次 fp16 GEMM 的输出
+            t_, o_ = _q16(t_), _q16(t_ @ a_mat.T)
+            o_ = _q16(t_ @ a_mat.T)
+        dl = msk_j * (-o_)
         dx = dl * ca["beta"][:, None] * gam2
         # dk
         dk[sl] = (dqkt.T @ Qn[sl]
@@ -108,7 +120,7 @@ def relay_reference(T_len=256, C=64, DK=64, DV=64, dump=None, quantize=False):
                      + e_vec * (Kn[sl] * t2).sum(1)
                      + (dl * gam2 * kk).sum(1))
         # dgam
-        dgam2 = dpk * msk_m * (Qn[sl] @ Kn[sl].T) + dl * ca["beta"][:, None] * kk
+        dgam2 = dpk * msk_m * raw + dl * ca["beta"][:, None] * kk
         w12 = dgam2 * gam2
         dgam = w12.sum(1) - w12.sum(0) - dth * th
         qh = Qn[sl] @ hin.T
