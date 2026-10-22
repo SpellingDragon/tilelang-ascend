@@ -186,11 +186,11 @@ def run_stubs(level):
                 do = do.clone()
                 do[0, 0, 5, 3] = val
                 dev, dt = "npu", torch.float16
-                dq, _, _, _, _, _ = gdn_bwd_v3_relay(
+                _o = gdn_bwd_v3_relay(
                     q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
                     beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=64)
                 ref = np.concatenate([_golden_item(gold, "dq", 0)], axis=0)
-                return dq.cpu().float(), ref
+                return _o[0].cpu().float(), ref      # 只取 dq；relay 可能多返回 dk_parts
             return _f
         _run_boundary_case("dq_inf", "float16", _inj(float("inf")))
         _run_boundary_case("dq_neg_inf", "float16", _inj(float("-inf")))
