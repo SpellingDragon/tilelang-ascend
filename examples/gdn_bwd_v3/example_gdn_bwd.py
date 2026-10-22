@@ -1344,9 +1344,11 @@ if __name__ == "__main__":
         h0 = torch.zeros(B, H, DV, DK, dtype=dt)
         do = torch.randn(B, H, T_len, DV, dtype=dt)
 
-        dq, dk, dv, dbeta, dg, dh0 = gdn_bwd_v3_relay(
+        # relay 在 GDN_V3_DK_SPLIT=1 时会多返回一项 dk_parts，这里统一只取前六项
+        _o = gdn_bwd_v3_relay(
             q.to(dev), k.to(dev), v.to(dev), g.to(dev),
             beta.to(dev), h0.to(dev), do.to(dev), chunk_size=C)
+        dq, dk, dv, dbeta, dg, dh0 = _o[:6]
         torch.npu.synchronize()
         print("Init successful!")
 
