@@ -1362,14 +1362,17 @@ if __name__ == "__main__":
         B, H, C, DK, DV = 1, 1, 64, 64, 64
         dev, dt = "npu", torch.float16
         torch.manual_seed(7)
-        q = torch.randn(B, H, T_len, DK, dtype=dt)
-        k = torch.randn(B, H, T_len, DK, dtype=dt)
+        # 与 test_gdn_bwd_v2._np_sample 同分布：Q 除 sqrt(DK)、K 行单位化、G 恒负
+        # （分布不一致会让 Gam 的量级差几个数量级，进而溢出成 nan）
+        q = torch.randn(B, H, T_len, DK, dtype=torch.float32) / DK ** 0.5
+        k = torch.randn(B, H, T_len, DK, dtype=torch.float32)
+        k = k / k.norm(dim=-1, keepdim=True).clamp_min(1e-6)
         v = torch.randn(B, H, T_len, DV, dtype=dt)
-        # 每 chunk 的 cumsum 控制在 ~-0.5：Gam=exp(gam_r-gam_c) 才不溢出（见 _case_inputs）
-        g = -torch.rand(B, H, T_len, dtype=torch.float32) / C
-        beta = torch.rand(B, H, T_len, dtype=torch.float32)
-        h0 = torch.zeros(B, H, DV, DK, dtype=dt)
-        do = torch.randn(B, H, T_len, DV, dtype=dt)
+        g = -torch.randn(B, H, T_len).abs() * 0.5 - 0.05
+        beta = torch.sigmoid(torch.randn(B, H, T_len))
+        h0 = torch.randn(B, H, DV, DK, dtype=torch.float32) * 0.1
+        do = torch.randn(B, H, T_len, DV, dtype=torch.float32)
+        q, k, h0, do = q.to(dt), k.to(dt), h0.to(dt), do.to(dt)
         _o = gdn_bwd_v3_relay(
             q.to(dev), k.to(dev), v.to(dev), g.to(dev),
             beta.to(dev), h0.to(dev), do.to(dev), chunk_size=C)
