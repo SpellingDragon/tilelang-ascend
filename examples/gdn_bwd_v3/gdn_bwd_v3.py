@@ -620,10 +620,10 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         Kc = k[:, :, sl, :]
         Vc = v[:, :, sl, :]
         DOc = do[:, :, sl, :]
-        Ac = ws_a[:, :, sl, :]
-        Gc = ws_g[:, :, sl]
+        Ac = ws_a[:, :, sl, :].contiguous()
+        Gc = ws_g[:, :, sl].contiguous()
         Ec = torch.exp(Gc)
-        Hc = ws_h[:, :, c, :, :]
+        Hc = ws_h[:, :, c, :, :].contiguous()
         Betac = beta[:, :, sl]
         Gamc = ws_gam[:, :, c, :, :]
 
@@ -759,17 +759,20 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             torch.npu.synchronize()
             print(f"RELAYDBG c@{tag}", flush=True)
 
+    # H>1 时 workspace 与输入在切第 3 维后 stride 会跳（见 notes [134][135]），
+    # 在入口一次性连续化，避免每个 chunk 的每处切片各自拷贝。
+    q, k, v, do, g, beta, h0 = (x.contiguous() for x in (q, k, v, do, g, beta, h0))
+
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
         # H>1 时 T 维切片不再连续（H 维 stride 跳跃），而 JIT 要求入参 contiguous；
         # H=1 时 .contiguous() 是 no-op，不改变既有结果。
-        Qc, Kc, Vc, DOc = (q[:, :, sl, :].contiguous(), k[:, :, sl, :].contiguous(),
-                           v[:, :, sl, :].contiguous(), do[:, :, sl, :].contiguous())
-        Ac = ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]
-        Gc = ws_g[:, :, sl]
+        Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
+        Ac = (ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]).contiguous()
+        Gc = ws_g[:, :, sl].contiguous()
         Ec = torch.exp(Gc)
-        Hc = ws_h[:, :, c, :, :] if hs_override is None else hs_override[:, :, c]
+        Hc = ws_h[:, :, c, :, :].contiguous() if hs_override is None else hs_override[:, :, c]
         Betac, Gamc = beta[:, :, sl], ws_gam[:, :, c, :, :]
         bv = k_scale(Vc, Betac)
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
