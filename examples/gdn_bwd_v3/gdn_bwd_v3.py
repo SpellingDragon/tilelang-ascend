@@ -762,7 +762,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
-        Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
+        # H>1 时 T 维切片不再连续（H 维 stride 跳跃），而 JIT 要求入参 contiguous；
+        # H=1 时 .contiguous() 是 no-op，不改变既有结果。
+        Qc, Kc, Vc, DOc = (q[:, :, sl, :].contiguous(), k[:, :, sl, :].contiguous(),
+                           v[:, :, sl, :].contiguous(), do[:, :, sl, :].contiguous())
         Ac = ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]
         Gc = ws_g[:, :, sl]
         Ec = torch.exp(Gc)
