@@ -52,14 +52,14 @@ def run_case(B, H, T_len, DK, DV, C, check_dkdv):
         ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
         idt = "float32" if item in FP32_ITEMS else dtype
         passed, ratio, max_abs = check_precision(got[item], ref, idt)
-        print(f"V3 {item} rel= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
+        print(f"V3 {item} max_abs= {max_abs:.3e} verdict= {'PASS' if passed else 'FAIL'} ratio={ratio:.4f}")
         ok &= passed
     if check_dkdv:   # 数值参考，不 gate
         for item in ("dk", "dv"):
             ref = np.concatenate([_golden_item(gold, item, b) for b in range(B)], axis=0)
             idt = "float32" if item in FP32_ITEMS else dtype
             _p, ratio, max_abs = check_precision(got[item], ref, idt)
-            print(f"V3 {item} (partial, not gated) rel={max_abs:.3e} ratio={ratio:.4f}")
+            print(f"V3 {item} (partial, not gated) max_abs={max_abs:.3e} ratio={ratio:.4f}")
     print("V3-DONE all=%s" % ("PASS" if ok else "FAIL"))
     return ok
 

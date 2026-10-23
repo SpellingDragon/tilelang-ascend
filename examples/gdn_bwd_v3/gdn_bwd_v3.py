@@ -12,7 +12,8 @@
   * `dk` —— 只含 `dqkt^T Q`（B4'）；**缺**跨 chunk 的 `Kt^T Delta'` 与 `th` 缩放。
   * `dv` —— 只含 `beta .* (A^T dVnew)`（B7）；**缺** `dKt` 相关的跨 chunk 项。
   因此多 chunk 下 dk/dv 与 golden 会有系统差；单 chunk（末 chunk 的 Delta'=0）一致。
-dbeta / dg / dh0 尚未接进本文件——形态已分别由 rows / dgss / dh0b 三个探针验证。
+dbeta / dg / dh0 已接入 relay（见 pass 2 的 r1/r2/r3、k_suffix、delta_f32）；
+本文件同时保留一个"精简版" gdn_bwd_v3（单 chunk 语义），多 chunk 请用 gdn_bwd_v3_relay。
 """
 
 import os
@@ -334,7 +335,9 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
              DQKT: T.Tensor([B, H, C, C], dtype), DQKTL: T.Tensor([B, H, C, C], dtype),  # type: ignore
              EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
         # compensated GEMM 的 prep（同 _ref:412-470）：hi = fp16(dqkt)，lo = dqkt - hi。
-        # 两半都出 fp16 —— UB→GM 没有 fp32 重载（copy_ub_to_gm 只收 fp16/bf16）。
+        # 两半都出 fp16 —— copy_ub_to_gm 是 dtype 泛型模板，src/dst 的 T 必须相同；
+        # 从 fp16 的 UB 拷进 fp32 的 GM 会因 T 无法同时成立而编译失败（不是"没有 fp32 重载"，
+        # fp32 UB→GM 本身可用，见 docs/api_docs/T.copy.md:76）。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H

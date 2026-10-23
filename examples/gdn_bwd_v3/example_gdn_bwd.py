@@ -502,22 +502,27 @@ def gdn_v3_dq(B, H, C, DK, DV, dtype="float16", accum="float"):
     return main
 
 
-@tilelang.jit(out_idx=[2], pass_configs=_PASS)
+@tilelang.jit(out_idx=[3], pass_configs=_PASS)
 def gdn_v3_dk(B, H, C, DK, dtype="float16", accum="float"):
     """dk = dqkt^T Q"""
 
     @T.prim_func
-    def main(DQKT: T.Tensor([B, H, C, C], dtype), Q: T.Tensor([B, H, C, DK], dtype),  # type: ignore
-             O: T.Tensor([B, H, C, DK], dtype)):  # type: ignore
+    def main(DQKT: T.Tensor([B, H, C, C], dtype), DLO: T.Tensor([B, H, C, C], dtype),  # type: ignore
+             Q: T.Tensor([B, H, C, DK], dtype), O: T.Tensor([B, H, C, DK], accum)):  # type: ignore
+        # compensated GEMM（同 _ref:412-470）：hi 一次 + lo 一次累加在同一个 L0C。
+        # O 走 fp32，避免最后一次 2^-11 的舍入。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
             a_l1 = T.alloc_L1([C, C], dtype)   # A (transposed)
             q_l1 = T.alloc_L1([C, DK], dtype)  # B
+            lo_l1 = T.alloc_L1([C, C], dtype)   # lo 半
             o_l0 = T.alloc_L0C([C, DK], accum)
             T.copy(DQKT[b, h, 0, 0], a_l1)
+            T.copy(DLO[b, h, 0, 0], lo_l1)
             T.copy(Q[b, h, 0, 0], q_l1)
             T.gemm_v0(a_l1, q_l1, o_l0, transpose_A=True, init=True)
+            T.gemm_v0(lo_l1, q_l1, o_l0, transpose_A=True, init=False)
             T.copy(o_l0, O[b, h, 0, 0])
 
     return main
@@ -648,7 +653,7 @@ def gdn_v3_gate(B, H, C, dtype="float16", accum="float"):
     return main
 
 
-@tilelang.jit(out_idx=[5, 6], pass_configs=_PASS)
+@tilelang.jit(out_idx=[5, 6, 7], pass_configs=_PASS)
 def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
     """dqkt = dP .* Gam .* M ;  e_do = E .* dO"""
 
@@ -656,7 +661,10 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
     def main(DP: T.Tensor([B, H, C, C], dtype), Gam: T.Tensor([B, H, C, C], "float"),  # type: ignore
              Msk: T.Tensor([B, H, C, C], "float"), E: T.Tensor([B, H, C], "float"),  # type: ignore
              DO: T.Tensor([B, H, C, DV], dtype),  # type: ignore
-             DQKT: T.Tensor([B, H, C, C], dtype), EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
+             DQKT: T.Tensor([B, H, C, C], dtype), DQKTL: T.Tensor([B, H, C, C], dtype),  # type: ignore
+             EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
+        # compensated GEMM 的 prep（同 _ref:412-470）：hi = fp16(dqkt)，lo = dqkt - hi。
+        # 两半都出 fp16 —— UB→GM 没有 fp32 重载（copy_ub_to_gm 只收 fp16/bf16）。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
@@ -676,7 +684,11 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
             for i, j in T.Parallel(C, C):
                 d32[i, j] = d32[i, j] * g32[i, j] * m32[i, j]
             T.copy(d32, d16)
-            T.copy(d16, DQKT[b, h, 0, 0])
+            T.copy(d16, DQKT[b, h, 0, 0])          # hi
+            for i, j in T.Parallel(C, C):
+                d32[i, j] = d32[i, j] - d16[i, j]  # lo = dqkt - hi（fp32 内减）
+            T.copy(d32, d16)
+            T.copy(d16, DQKTL[b, h, 0, 0])         # lo
             T.copy(o16, o32)
             for i, j in T.Parallel(C, DV):
                 o32[i, j] = o32[i, j] * e32[i]
@@ -873,6 +885,7 @@ def _bcast_last(x, n):
 
 def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     """返回 (dq, dk, dv)。前置 S/A/H 复用 v2 的三件（均已真机验证）。"""
+    # 卡上是扁平的 /tmp 布局，仓内是包路径；两条都试，避免部署形态差异
 
     B, H, T_len, DK = q.shape
     DV = v.shape[-1]
@@ -945,9 +958,9 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         # P = (QK^T) .* Gam .* M 不是 dq 链的输入（dq 用 dP），只在 dv 链的
         # `dvnew = P^T dO`（golden B1）里需要，因此放到下面 dv 那一步再算。
         dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
-        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
-        dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc); _step("dq")
-        dk[:, :, sl, :] = k_dk(dqkt, Qc); _step("dk")
+        dqkt_hi, dqkt_lo, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
+        dq[:, :, sl, :] = k_dq(dqkt_hi, Kc, edo, Hc); _step("dq")
+        dk[:, :, sl, :] = k_dk(dqkt_hi, dqkt_lo, Qc); _step("dk")
         # A2：dv = beta .* (A^T dvnew)，dvnew 是**反向**的 `P^T dO`（golden B1），
         # 不是前向的 Vnew。精简版没有 Delta' 反向扫描：单 chunk（Delta'_{c+1}=0）
         # 与 golden 一致，多 chunk 缺 `Kt Delta'^T` 项（见文件头「能力边界」）。
@@ -1076,11 +1089,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
         dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
-        dqkt, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
-        dq[:, :, sl, :] = k_dq(dqkt, Kc, edo, Hc)
+        dqkt_hi, dqkt_lo, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
+        dq[:, :, sl, :] = k_dq(dqkt_hi, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, v_hi=v_hi, v_lo=v_lo, wm_n=wm_n, bv=bv, bek_n=bek_n, Gamc=Gamc,
-                          P=_P, dqkt=dqkt, edo=edo, dP=dP, raw=raw,
+                          P=_P, dqkt=dqkt_hi, dqkt_lo=dqkt_lo, edo=edo, dP=dP, raw=raw,
                           glast=torch.exp(Gc[:, :, -1]),
                           th=torch.exp(Gc[:, :, -1:].expand(-1, -1, C) - Gc)))
     torch.npu.synchronize()
@@ -1110,7 +1123,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         # 只存 fp32；hi/lo 由消费者现派生（[103]：fp16 每轮舍入一次，拆 hi/lo 得 22 位）
         delta_f32 = nxt
         # 四项各自打印 abs.max，与本地基线对表（3.8~6.3 / 0.13~0.33 / 0~2.5 / 0.38~0.44）
-        _dk1 = k_dk(d["dqkt"], d["Qc"])
+        _dk1 = k_dk(d["dqkt"], d["dqkt_lo"], d["Qc"])
         if _DBG:
             print(f"RELAYQ c={c} q1={_dk1.abs().max():.4e}", flush=True)
         # dk += th .* (vnew Delta')（末 chunk 的 Delta' 为 0，dkt 自然为 0）
@@ -1127,12 +1140,12 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             dkt = k_mm(d["v_hi"], nxt_delta) + k_mm(d["v_lo"], nxt_delta)
         # H2：th 显式展开成 4-D，不依赖 [B,H,C] x [B,H,C,DK] 的广播
         _th4 = _bcast_last(d["th"].float(), DK)
-        _q3 = (_th4 * dkt.float()).to(dt)
+        _q3 = _th4 * dkt.float()          # 跨 chunk 项，保持 fp32 落 GM（T=128 时占 0.29x）
         if _DBG:
             print(f"RELAYQ c={c} q3={_q3.abs().max():.4e}", flush=True)
         # 四项各自是 fp16 kernel 的输出；累加放在 fp32，最后一次性 cast，
         # 避免 3 次 fp16 加法（每次 ulp≈4e-3）把 dk 的误差推到 1e-2 量级
-        _dk_acc = _dk1.float() + _q3.float()
+        _dk_acc = _dk1.float() + _q3.float()   # 两项都是 fp32，无额外舍入
         dth = (d["Kc"].float() * dkt.float()).sum(-1)
         # dv = beta .* (A^T dvnew) ;  t1 顺带给出 dbeta 的第一项
         t1 = k_ta(d["Ac"], dvnew)                       # [B,H,C,DV]
@@ -1355,7 +1368,7 @@ if __name__ == "__main__":
     tilelang.cache.clear_cache()
     CASES = [
         (64, ("dq", "dk", "dv", "dbeta", "dg", "dh0"), "L0"),
-        (256, ("dq", "dv", "dh0"), "L1"),   # dg 的 rel 也超 5e-3，降为 record-only
+        (256, ("dq", "dk", "dv", "dbeta", "dg", "dh0"), "L1"),
     ]
     for T_len, gate, level in CASES:
         print(f"Testing gdn_bwd_v3 {level} with T={T_len}")
@@ -1404,7 +1417,7 @@ if __name__ == "__main__":
                 "REL_OK" if rel < 5e-3 else "FAIL")
             print(f"  {name:6s} rel={rel:.3e} ratio={ratio:.4f} max_abs={max_abs:.3e} "
                   f"[{tag}{'' if gated else ', record-only'}]")
-            if gated and rel >= 5e-3:
+            if gated and not (rel < 5e-3):   # nan 时 rel<5e-3 为 False，故必须取反写
                 ok = False
         if not ok:
             raise SystemExit(f"{level} failed")
