@@ -84,11 +84,19 @@ def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
     torch.manual_seed(7)
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
     dev, dt = "npu", torch.float16
-    # 用 golden 的 H_in（fp64→fp16）跑一遍：若 dk/dbeta 明显改善，说明残差来自
-    # v2 的 scan1 递推精度（这是"改前置"之前的判定实验）
+    # `GDN_V3_GOLDEN_H=1` 会把 golden 的 `H_in`/`A` 通过 override 灌进 relay，
+    # 等于把 v2 的 `scan1`/`solve_a` 从链路里挖掉 —— 那种跑法**不验前置件**。
+    # 默认必须是 0（原生），否则 L1 绿了也说明不了生产路径可用。
+    # 只在定位“残差是不是前置件带来的”时才显式置 1。
     import os as _os
     _hs = None
-    if _os.environ.get("GDN_V3_GOLDEN_H", "1") == "1":
+    _use_golden = _os.environ.get("GDN_V3_GOLDEN_H", "0") == "1"
+    if _use_golden:
+        print("RELAYWARN GDN_V3_GOLDEN_H=1：用 golden 的 H_in/A 替换前置件，"
+              "本次结果不覆盖 scan1/solve_a", flush=True)
+        # 下面的 override 张量按 [None, None] 建，只有 H=1（单 head）能用；
+        # 多 head 需要逐 head 堆（`_relay_attr.py` 里的 `_golden_h`）。
+        assert B == 1 and H == 1, "GDN_V3_GOLDEN_H=1 只支持 B=H=1"
         # B3：按 ceil(T/C) 建（relay 的 NC 也是 ceil）——此前用 T//C，T=65 时只建 1 块，
         # relay 读 hs_override[:,:,1] 必 IndexError，把"拒绝"伪装成 relay 的越界。
         _q = q.double().numpy()[0, 0]
