@@ -41,15 +41,26 @@ def copy_col(B, C, DK, BK, off, dtype="float16"):
 
 @tilelang.jit(out_idx=[1], pass_configs=_PASS)
 def kk_split(B, C, DK, BK, nb, dtype="float16", accum="float"):
-    """KK^T = sum_i K[:, i*BK:(i+1)*BK] K[:, i*BK:(i+1)*BK]^T，用 `init=(i == 0)` 累加。"""
+    """`nb>0` 时用**真实写法**：GM→UB（两级中转）→L1，循环上界由 `T.ceildiv` 算。
+
+    第一版用的是 GM→L1 直拷 + Python 整数上界，结果 nb=2 也 PASS，
+    说明两条最小复现都没打到真凶。这里把 `solve_a` 的三处细节全部照抄：
+      ① `k_half` 是 UB，选 `T.copy(GM, ub)` 再 `T.copy(ub, l1)`；
+      ② 循环上界用 `T.ceildiv(DK, BK)`（不是 Python 整数）；
+      ③ 循环前 `T.tile.fill(k_half, 0.0)`。
+    """
 
     @T.prim_func
     def main(K: T.Tensor([B, C, DK], dtype), O: T.Tensor([B, C, C], dtype)):  # type: ignore
         with T.Kernel(B, threads=1, is_npu=True) as (cid):
             k_l1 = T.alloc_L1([C, BK], dtype)
+            k_half = T.alloc_ub([C, BK], dtype)
             kk_l0 = T.alloc_L0C([C, C], accum)
-            for i in T.serial(nb):
-                T.copy(K[cid, 0, i * BK], k_l1)
+            bk_num = T.ceildiv(DK, BK) if nb < 0 else nb
+            T.tile.fill(k_half, 0.0)
+            for i in T.serial(bk_num):
+                T.copy(K[cid, 0, i * BK], k_half)
+                T.copy(k_half, k_l1)
                 T.gemm_v0(k_l1, k_l1, kk_l0, transpose_B=True, init=(i == 0))
             T.copy(kk_l0, O[cid, 0, 0])
 
@@ -79,13 +90,14 @@ def kk_case(nb, tag):
     O = kk_split(1, C, DK, BK, nb)(K.npu())
     torch.npu.synchronize()
     Kd = K.double().numpy()
-    # 参照必须与 nb 一致：kernel 只累加 nb 个块，不是永远全宽。
-    # 第一版这里拿全宽当参照，于是 nb=1 的 CONTROL 报 60%——**是探针错，不是产品错**，
-    # 正好被 CONTROL 拦住（否则会被误读成“动态 init 坏了”）。
+    # 参照必须与块数一致：kernel 只累加 nb 个块，不是永远全宽。
+    # nb<0 表示“上界交给 T.ceildiv(DK,BK)”，此时有效块数就是这个商。
+    n_eff = (DK + BK - 1) // BK if nb < 0 else nb
     ref = sum(Kd[:, :, i * BK:(i + 1) * BK] @ Kd[:, :, i * BK:(i + 1) * BK].transpose(0, 2, 1)
-              for i in range(nb))
+              for i in range(n_eff))
     rel = _rel(O, ref)
-    print(f"{tag} name=kk   nb={nb:<3} rel={rel:.3e} "
+    label = f"nb={n_eff}/ceil" if nb < 0 else f"nb={nb:<3}"
+    print(f"{tag} name=kk   {label} rel={rel:.3e} "
           f"{'PASS' if rel < GATE else 'FAIL'}", flush=True)
     return rel < GATE
 
@@ -101,7 +113,8 @@ def main():
         print("BKS-DONE", flush=True)
         return
     copy_case(BK, "BKS")                # (1) 列偏移非零
-    kk_case(2, "BKS")                   # (2) 两个块 + 动态 init
+    kk_case(2, "BKS")                   # (2) 两块 + 动态 init（简化形式）
+    kk_case(-1, "BKS")                  # (3) 完全照抄 solve_a：UB 中转 + T.ceildiv 上界
     print("BKS-DONE", flush=True)
 
 
