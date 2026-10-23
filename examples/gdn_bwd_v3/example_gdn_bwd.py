@@ -884,6 +884,16 @@ def _bcast_last(x, n):
     return x.unsqueeze(-1).expand(-1, -1, -1, n)
 
 
+def _contig(x):
+    """kernel 入参必须连续：JIT 桥对任何非连续张量直接抛错（cython_wrapper.pyx:149）。
+
+    父张量连续**不保证**中轴切片连续——`q[:, :, c*C:(c+1)*C, :]` 在 H>1 时
+    stride 仍按完整 T 走（实测 [1,16,64,128] stride=(1048576,65536,128,1)），
+    只有 H=1 时前导维为 1 才碰巧连续。故连续化必须落在**切片之后**；
+    H=1 时 is_contiguous() 为真，不产生拷贝。
+    """
+    return x if x.is_contiguous() else x.contiguous()
+
 
 def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     """返回 (dq, dk, dv)。前置 S/A/H 复用 v2 的三件（均已真机验证）。"""
@@ -937,16 +947,16 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
 
     for c in range(NC):                              # D23: one launch per chunk
         sl = slice(c * C, (c + 1) * C)
-        Qc = q[:, :, sl, :]
-        Kc = k[:, :, sl, :]
-        Vc = v[:, :, sl, :]
-        DOc = do[:, :, sl, :]
-        Ac = ws_a[:, :, sl, :]
-        Gc = ws_g[:, :, sl]
+        Qc = _contig(q[:, :, sl, :])
+        Kc = _contig(k[:, :, sl, :])
+        Vc = _contig(v[:, :, sl, :])
+        DOc = _contig(do[:, :, sl, :])
+        Ac = _contig(ws_a[:, :, sl, :])
+        Gc = _contig(ws_g[:, :, sl])
         Ec = torch.exp(Gc)
-        Hc = ws_h[:, :, c, :, :]
-        Betac = beta[:, :, sl]
-        Gamc = ws_gam[:, :, c, :, :]
+        Hc = _contig(ws_h[:, :, c, :, :])
+        Betac = _contig(beta[:, :, sl])
+        Gamc = _contig(ws_gam[:, :, c, :, :])
 
         bv = k_scale(Vc, Betac); _step("scale")      # beta .* V
         # -W 的构造：A @ (-(beta E) K) = -W，于是 Vnew 可以在一个 L0C 里累加出来
@@ -1072,18 +1082,22 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
             torch.npu.synchronize()
             print(f"RELAYDBG c@{tag}", flush=True)
 
+    # H>1 时第 3 维切片不连续（见 notes [134][135]）。入口这一步只保证“父张量”
+    # 连续，**不能**替代切片后的连续化：sw 切片的 stride 仍按完整 T 走。
+    # 每个落到 kernel 的切片走 `_contig` 一处收口。
+    q, k, v, do, g, beta, h0 = (x.contiguous() for x in (q, k, v, do, g, beta, h0))
+
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
-        # H>1 时 T 维切片不再连续（H 维 stride 跳跃），而 JIT 要求入参 contiguous；
-        # H=1 时 .contiguous() 是 no-op，不改变既有结果。
-        Qc, Kc, Vc, DOc = (q[:, :, sl, :].contiguous(), k[:, :, sl, :].contiguous(),
-                           v[:, :, sl, :].contiguous(), do[:, :, sl, :].contiguous())
-        Ac = ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]
-        Gc = ws_g[:, :, sl]
+        # H>1 时 T 维切片不连续（父张量连续也不够），JIT 要求入参 contiguous；
+        # 五处切片统一走 `_contig`，H=1 时无拷贝、不改变既有结果。
+        Qc, Kc, Vc, DOc = (_contig(x[:, :, sl, :]) for x in (q, k, v, do))
+        Ac = _contig(ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c])
+        Gc = _contig(ws_g[:, :, sl])
         Ec = torch.exp(Gc)
-        Hc = ws_h[:, :, c, :, :] if hs_override is None else hs_override[:, :, c]
-        Betac, Gamc = beta[:, :, sl], ws_gam[:, :, c, :, :]
+        Hc = _contig(ws_h[:, :, c, :, :] if hs_override is None else hs_override[:, :, c])
+        Betac, Gamc = _contig(beta[:, :, sl]), _contig(ws_gam[:, :, c, :, :])
         bv = k_scale(Vc, Betac)
         # 只算 -W：Vnew 需要它做累加，Delta' 的 dvnew^T W 用 -W 也等价（符号进 host 相加）
         bek_n = k_scale_k(Kc, -Betac * Ec)      # -(beta E K)，da 的第二项要用它
