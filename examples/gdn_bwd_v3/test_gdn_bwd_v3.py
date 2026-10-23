@@ -133,8 +133,11 @@ def run_relay(B, H, T_len, DK, DV, C, gate=None, rel_gate=False):
 
         _tag = "gated" if item in _gate else "record-only"
         _rel = max_abs / (float(np.abs(ref).max()) + 1e-30)
+        # 判据与显示必须同源：rel_gate 时 verdict 报 rel 的判定，否则报 check_precision 的
+        _ok_here = (_rel < 5e-3) if rel_gate else passed
         print(f"RELAY {item} rel={_rel:.3e} ratio={ratio:.4f} max_abs={max_abs:.3e} "
-              f"verdict={'PASS' if passed else 'FAIL'} [{_tag}]")
+              f"verdict={'PASS' if _ok_here else 'FAIL'} "
+              f"[{_tag}{'' if rel_gate else ', ratio口径'}]")
         if item in _gate:
             ok &= (_rel < 5e-3) if rel_gate else passed
     ref0 = np.concatenate([_golden_item(gold, "dh0", b) for b in range(B)], axis=0)
