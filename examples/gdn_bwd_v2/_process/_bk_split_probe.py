@@ -79,7 +79,11 @@ def kk_case(nb, tag):
     O = kk_split(1, C, DK, BK, nb)(K.npu())
     torch.npu.synchronize()
     Kd = K.double().numpy()
-    ref = Kd @ Kd.transpose(0, 2, 1)                    # 全宽 KK^T（nb 个块之和）
+    # 参照必须与 nb 一致：kernel 只累加 nb 个块，不是永远全宽。
+    # 第一版这里拿全宽当参照，于是 nb=1 的 CONTROL 报 60%——**是探针错，不是产品错**，
+    # 正好被 CONTROL 拦住（否则会被误读成“动态 init 坏了”）。
+    ref = sum(Kd[:, :, i * BK:(i + 1) * BK] @ Kd[:, :, i * BK:(i + 1) * BK].transpose(0, 2, 1)
+              for i in range(nb))
     rel = _rel(O, ref)
     print(f"{tag} name=kk   nb={nb:<3} rel={rel:.3e} "
           f"{'PASS' if rel < GATE else 'FAIL'}", flush=True)
