@@ -271,7 +271,7 @@ def main():
         # 这两个口径可以同时成立（rel 6/6 而 ratio 2/6），验收时必须写明用的是哪个。
         print("=== P3 口径（六项 rel<5e-3）===", flush=True)
         ok &= run_relay(1, 1, 64, 64, 64, 64, rel_gate=True)
-        ok &= run_relay(1, 1, 256, 64, 64, 64, 64, rel_gate=True)
+        ok &= run_relay(1, 1, 256, 64, 64, 64, rel_gate=True)
     for extra in ("l1", "l2", "boundary"):
         if level in (extra, "all"):
             ok &= run_stubs(extra)      # B1：此前丢弃返回值 ⇒ l1/l2 的失败不影响退出码
