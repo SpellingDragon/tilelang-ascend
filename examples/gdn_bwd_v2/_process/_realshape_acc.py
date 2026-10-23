@@ -23,7 +23,7 @@ ITEMS = ("dq", "dk", "dv", "dbeta", "dg", "dh0")
 GATE = 5e-3
 
 
-def one(T_len, dim=128, B=1, H=16, C=64):
+def one(T_len, dim=128, H=16, B=1, C=64):
     DK = DV = dim
     torch.manual_seed(7)
     dt = torch.float16
@@ -91,14 +91,20 @@ def one(T_len, dim=128, B=1, H=16, C=64):
 
 def main():
     all_ok = True
-    # CONTROL 必须选“已实测过 known-good 的那个配置”：DK=64 的 T=256（4 chunk，实测 ~1e-3）。
-    # 不能随便拿同形状的另一个 T 当 control：T=512/DK=64 实测 dk 就是 9.97e-03，
-    # 它失败不代表量具坏，只代表那个配置本来就不 known-good（notes [154]）。
-    for T_len, dim in ((256, 64), (512, 128), (8192, 128)):
+    # CONTROL = 已实测 known-good 的配置：H=1、DK=DV=64、T=256（example 原生路径 4.1e-04~2.4e-03）。
+    # T2：`dk` 在 8~16 chunk 有波动（T=512/DK=64 实测 9.97e-03，T=8192 却 4.29e-03），
+    # 这里用 H=1 扫一条 T 曲线把它定性（H=1 使 golden 便宜 16×，而 dk 无 head 耦合）。
+    for T_len, dim, H in (
+        (256, 64, 1),      # CONTROL
+        (128, 128, 1),     # 2 chunk
+        (512, 128, 1),     # 8 chunk
+        (2048, 128, 1),    # 32 chunk
+        (8192, 128, 1),    # 128 chunk（DoD 形）
+    ):
         try:
-            all_ok &= one(T_len, dim)
+            all_ok &= one(T_len, dim, H)
         except Exception as exc:                            # noqa: BLE001
-            print(f"REALSHAPE-ACC T={T_len} dim={dim} RAISED {type(exc).__name__}: "
+            print(f"REALSHAPE-ACC T={T_len} dim={dim} H={H} RAISED {type(exc).__name__}: "
                   f"{str(exc).splitlines()[0][:110]}", flush=True)
             all_ok = False
             break
