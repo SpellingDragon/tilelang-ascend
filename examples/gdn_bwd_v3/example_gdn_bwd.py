@@ -13,10 +13,11 @@ Precision, measured on an Ascend 910B (full tables in the run notes):
   * single head only: H > 1 needs the per-chunk slices made contiguous at every
     kernel boundary (see `_contig`); the multi-head path is exercised by the
     real-shape probe, not by this example.
-  * DK = DV = 64 only. At DK = DV = 128 the same code, same head count and
-    same chunk count gives 4e-2..9e-2 on five of six gradients (dh0 stays
-    2e-3); the 64 -> 128 flip is the only variable changed and it is still
-    under investigation. Do not read the two cases below as covering 128.
+  * DK = DV = 64 in the two cases below, but 128 works too: at
+    B1 H16 T8192 DK128 DV128 (128 chunks) all six gradients stay within
+    rel < 5e-3 (dq 5.9e-04 .. dg 4.7e-03). Getting there needed BK = DK in the
+    `solve_a` call — the BK-blocked KK^T path is wrong for bk_num > 1, which is
+    invisible at DK = 64 because bk_num == 1 there. See `_contig` above.
 """
 
 import math
