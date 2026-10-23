@@ -239,7 +239,6 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
             k_l1 = T.alloc_L1([C, BK], dtype)
             kk_l0 = T.alloc_L0C([C, C], accum_dtype)
 
-            k_half = T.alloc_ub([C, BK], dtype)
             a_half = T.alloc_ub([C, C], dtype)
             kk_ub = T.alloc_ub([C, C], accum_dtype)  # KK^T -> L (in-place)
             o_ub = T.alloc_ub([C, C], accum_dtype)  # substitution target -> A
@@ -252,11 +251,13 @@ def gdn_bwd_v2_solve_a(B, H, L, DK, C, BK, dtype="float16", accum_dtype="float")
             be_ub = T.alloc_ub([C], accum_dtype)
             g_ub = T.alloc_ub([C], accum_dtype)
 
-            # ---- KK^T = K K^T, BK-blocked GEMM (fwd kkt idiom) ----
-            T.tile.fill(k_half, 0.0)
+            # ---- KK^T = K K^T, BK-blocked GEMM（fwd kkt idiom，**逐字对齐**）----
+            # 曾经这里多一级 UB 中转（`fill` + GM→UB→L1），而注释仍写着 “fwd kkt idiom”。
+            # 实测那一级在 DK=128/BK=64（bk_num=2）下把结果算成 0，而上游的原写法
+            # （GM→L1 直拷 + 动态 init）在上游自己的 DK=64/BK=32（bk_num=2）上是绿的；
+            # 同一个 3 行 idiom 两者只差这一级中转，所以这里回到上游写法。见 run notes [158]。
             for i in T.serial(bk_num):
-                T.copy(K[bz, by, bx * C, i * BK], k_half)
-                T.copy(k_half, k_l1)
+                T.copy(K[bz, by, bx * C, i * BK], k_l1)
                 T.gemm_v0(k_l1, k_l1, kk_l0, transpose_B=True, init=(i == 0))
             T.copy(kk_l0, kk_ub)
 
