@@ -158,8 +158,9 @@ def _level():
 
 
 GATED_ALL = ("dq", "dk", "dv", "dbeta", "dg")
-# 多 chunk 的已知限制（tasks 9.6）：dk 差 2.6x、dbeta 差 1.2x —— 只记录不阻塞
-GATED_MULTI = ("dq", "dv", "dh0")   # dg 在多 chunk 的 rel 也超 5e-3，降 record-only
+# 多 chunk 的已知限制（tasks 9.6/9.7）：在 **ratio** 口径下 dk/dbeta/dg 不过；
+# 归一化 rel 口径下六项均 <5e-3（见 --level p3）。这里只 gate 三项，其余 record-only。
+GATED_MULTI = ("dq", "dv", "dh0")
 # B2：比较口径按 item 选 —— dq/dk/dv/dh0 随主 dtype（fp16），dbeta/dg 是 fp32 输出
 # （v2 的 `_FP32_ITEMS` 同款；此前全用 fp16 口径 = max_abs_limit 1e-1，判据虚宽）
 FP32_ITEMS = ("dbeta", "dg")
@@ -262,6 +263,12 @@ def main():
         # relay 才是 dk/dv/dbeta 的 gate；先单 chunk（无 scan1 递推）再多 chunk
         ok &= run_relay(1, 1, 64, 64, 64, 64)
         ok &= run_relay(1, 1, 256, 64, 64, 64)
+    if level in ("p3", "all"):
+        # P3 出口（tasks 9.2）：六项**归一化 rel** <5e-3，与 DoD 的 ratio>=0.99 分开记账。
+        # 这两个口径可以同时成立（rel 6/6 而 ratio 2/6），验收时必须写明用的是哪个。
+        print("=== P3 口径（六项 rel<5e-3）===", flush=True)
+        ok &= run_relay(1, 1, 64, 64, 64, 64, rel_gate=True)
+        ok &= run_relay(1, 1, 256, 64, 64, 64, 64, rel_gate=True)
     for extra in ("l1", "l2", "boundary"):
         if level in (extra, "all"):
             ok &= run_stubs(extra)      # B1：此前丢弃返回值 ⇒ l1/l2 的失败不影响退出码
