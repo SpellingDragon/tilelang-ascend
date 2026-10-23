@@ -323,7 +323,7 @@ def gdn_v3_gate(B, H, C, dtype="float16", accum="float"):
     return main
 
 
-@tilelang.jit(out_idx=[5, 6], pass_configs=_PASS)
+@tilelang.jit(out_idx=[5, 6, 7], pass_configs=_PASS)
 def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
     """dqkt = dP .* Gam .* M ;  e_do = E .* dO"""
 
@@ -331,9 +331,10 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
     def main(DP: T.Tensor([B, H, C, C], dtype), Gam: T.Tensor([B, H, C, C], "float"),  # type: ignore
              Msk: T.Tensor([B, H, C, C], "float"), E: T.Tensor([B, H, C], "float"),  # type: ignore
              DO: T.Tensor([B, H, C, DV], dtype),  # type: ignore
-             DQKT: T.Tensor([B, H, C, C], accum), EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
-        # DQKT 走 fp32：dk 的主项要从它做 compensated GEMM（hi/lo 两半），
-        # 出 fp16 就等于先丢掉 lo，之后再补不回来（见 _ref/chunk_o_bwd_pr1802.py:412-470）。
+             DQKT: T.Tensor([B, H, C, C], dtype), DQKTL: T.Tensor([B, H, C, C], dtype),  # type: ignore
+             EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
+        # compensated GEMM 的 prep（同 _ref:412-470）：hi = fp16(dqkt)，lo = dqkt - hi。
+        # 两半都出 fp16 —— UB→GM 没有 fp32 重载（copy_ub_to_gm 只收 fp16/bf16）。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
@@ -353,7 +354,11 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
             for i, j in T.Parallel(C, C):
                 d32[i, j] = d32[i, j] * g32[i, j] * m32[i, j]
             T.copy(d32, d16)
-            T.copy(d16, DQKT[b, h, 0, 0])
+            T.copy(d16, DQKT[b, h, 0, 0])          # hi
+            for i, j in T.Parallel(C, C):
+                d32[i, j] = d32[i, j] - d16[i, j]  # lo = dqkt - hi（fp32 内减）
+            T.copy(d32, d16)
+            T.copy(d16, DQKTL[b, h, 0, 0])         # lo
             T.copy(o16, o32)
             for i, j in T.Parallel(C, DV):
                 o32[i, j] = o32[i, j] * e32[i]
@@ -631,10 +636,7 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
         # P = (QK^T) .* Gam .* M 不是 dq 链的输入（dq 用 dP），只在 dv 链的
         # `dvnew = P^T dO`（golden B1）里需要，因此放到下面 dv 那一步再算。
         dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
-        dqkt32, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
-        # hi/lo 拆分（同 #1802）：hi 给 dq 与 dk 的第一次 GEMM，lo 只给 dk 的第二次
-        dqkt_hi = dqkt32.to(dt)
-        dqkt_lo = (dqkt32 - dqkt_hi.float()).to(dt)
+        dqkt_hi, dqkt_lo, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt_hi, Kc, edo, Hc); _step("dq")
         dk[:, :, sl, :] = k_dk(dqkt_hi, dqkt_lo, Qc); _step("dk")
         # A2：dv = beta .* (A^T dvnew)，dvnew 是**反向**的 `P^T dO`（golden B1），
