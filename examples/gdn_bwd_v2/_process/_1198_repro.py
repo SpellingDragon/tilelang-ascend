@@ -29,7 +29,7 @@ def variant(mode, C=64, N=64):
 
     @T.prim_func
     def main(W: T.Tensor([C, N], "float16"), O: T.Tensor([C, N], "float16")):  # type: ignore
-        with T.Kernel(1, threads=1, is_npu=True) as (cid):
+        with T.Kernel(1, threads=1, is_npu=True) as (cid):  # noqa: F841  (单块，不用 cid)
             l1 = T.alloc_L1([C, N], "float16")
             ub = T.alloc_ub([C, N], "float16")
             if mode == "A":
