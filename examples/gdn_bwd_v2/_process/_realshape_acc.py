@@ -91,8 +91,10 @@ def one(T_len, dim=128, B=1, H=16, C=64):
 
 def main():
     all_ok = True
-    # (T, dim, tag)：dim=64 是 CONTROL；512 与 8192 是目标形（8192 = DoD 那一档）
-    for T_len, dim in ((512, 64), (512, 128), (8192, 128)):
+    # CONTROL 必须选“已实测过 known-good 的那个配置”：DK=64 的 T=256（4 chunk，实测 ~1e-3）。
+    # 不能随便拿同形状的另一个 T 当 control：T=512/DK=64 实测 dk 就是 9.97e-03，
+    # 它失败不代表量具坏，只代表那个配置本来就不 known-good（notes [154]）。
+    for T_len, dim in ((256, 64), (512, 128), (8192, 128)):
         try:
             all_ok &= one(T_len, dim)
         except Exception as exc:                            # noqa: BLE001
