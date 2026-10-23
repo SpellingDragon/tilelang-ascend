@@ -267,7 +267,7 @@ def main():
         # P3 出口（tasks 9.2）：六项**归一化 rel** <5e-3，与 DoD 的 ratio>=0.99 分开记账。
         # 这两个口径可以同时成立（rel 6/6 而 ratio 2/6），验收时必须写明用的是哪个。
         print("=== P3 口径（六项 rel<5e-3）===", flush=True)
-        ok &= run_relay(1, 1, 64, 64, 64, 64, rel_gate=True)
+        ok &= run_relay(1, 1, 64, 64, 64, 64, 64, rel_gate=True)
         ok &= run_relay(1, 1, 256, 64, 64, 64, 64, rel_gate=True)
     for extra in ("l1", "l2", "boundary"):
         if level in (extra, "all"):
