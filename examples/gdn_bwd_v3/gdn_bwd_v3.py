@@ -775,10 +775,7 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
         raw = k_raw(Qc, Kc)
         _P = k_gate(raw, Gamc, msk_m)
         dP = (k_dp(DOc, v_hi).float() + k_dp(DOc, v_lo).float()).to(dt); _step("dp")
-        dqkt32, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
-        # hi/lo 拆分（同 #1802）：hi 给 dq 与 dk 的第一次 GEMM，lo 只给 dk 的第二次
-        dqkt_hi = dqkt32.to(dt)
-        dqkt_lo = (dqkt32 - dqkt_hi.float()).to(dt)
+        dqkt_hi, dqkt_lo, edo = k_ge(dP, Gamc, msk_m, Ec, DOc); _step("ge")
         dq[:, :, sl, :] = k_dq(dqkt_hi, Kc, edo, Hc)
         cache.append(dict(sl=sl, Qc=Qc, Kc=Kc, Vc=Vc, DOc=DOc, Ac=Ac, Ec=Ec, Hc=Hc,
                           Betac=Betac, v_hi=v_hi, v_lo=v_lo, wm_n=wm_n, bv=bv, bek_n=bek_n, Gamc=Gamc,
