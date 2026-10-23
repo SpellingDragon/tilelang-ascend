@@ -664,7 +664,9 @@ def gdn_v3_gate_edo(B, H, C, DV, dtype="float16", accum="float"):
              DQKT: T.Tensor([B, H, C, C], dtype), DQKTL: T.Tensor([B, H, C, C], dtype),  # type: ignore
              EDO: T.Tensor([B, H, C, DV], dtype)):  # type: ignore
         # compensated GEMM 的 prep（同 _ref:412-470）：hi = fp16(dqkt)，lo = dqkt - hi。
-        # 两半都出 fp16 —— UB→GM 没有 fp32 重载（copy_ub_to_gm 只收 fp16/bf16）。
+        # 两半都出 fp16 —— copy_ub_to_gm 是 dtype 泛型模板，src/dst 的 T 必须相同；
+        # 从 fp16 的 UB 拷进 fp32 的 GM 会因 T 无法同时成立而编译失败（不是"没有 fp32 重载"，
+        # fp32 UB→GM 本身可用，见 docs/api_docs/T.copy.md:76）。
         with T.Kernel(B * H, threads=1, is_npu=True) as (cid):
             b = cid // H
             h = cid % H
@@ -1073,7 +1075,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     # ---- pass 1: 正向，存 vnew / W / Kt / th / glast ----
     for c in range(NC):
         sl = slice(c * C, (c + 1) * C)
-        Qc, Kc, Vc, DOc = q[:, :, sl, :], k[:, :, sl, :], v[:, :, sl, :], do[:, :, sl, :]
+        # H>1 时 T 维切片不再连续（H 维 stride 跳跃），而 JIT 要求入参 contiguous；
+        # H=1 时 .contiguous() 是 no-op，不改变既有结果。
+        Qc, Kc, Vc, DOc = (q[:, :, sl, :].contiguous(), k[:, :, sl, :].contiguous(),
+                           v[:, :, sl, :].contiguous(), do[:, :, sl, :].contiguous())
         Ac = ws_a[:, :, sl, :] if a_override is None else a_override[:, :, c]
         Gc = ws_g[:, :, sl]
         Ec = torch.exp(Gc)
