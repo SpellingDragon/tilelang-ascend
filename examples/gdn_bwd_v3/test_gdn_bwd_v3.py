@@ -161,9 +161,10 @@ def _level():
 
 
 GATED_ALL = ("dq", "dk", "dv", "dbeta", "dg")
-# 多 chunk 的已知限制（tasks 9.6/9.7）：在 **ratio** 口径下 dk/dbeta/dg 不过；
-# 归一化 rel 口径下六项均 <5e-3（见 --level p3）。这里只 gate 三项，其余 record-only。
-GATED_MULTI = ("dq", "dv", "dh0")
+# 多 chunk 此前只 gate 三项，dk/dbeta/dg 打 record-only。现在把六项全部纳入
+# （`rel` 口径）：T=128 最差 dk 2.400e-03、T=192 最差 dg 1.911e-03，均 <5e-3，
+# 余量 2×。ratio 口径仍不过，但那不是精度差（见 notes [140]）。
+GATED_MULTI = ("dq", "dk", "dv", "dbeta", "dg", "dh0")
 # B2：比较口径按 item 选 —— dq/dk/dv/dh0 随主 dtype（fp16），dbeta/dg 是 fp32 输出
 # （v2 的 `_FP32_ITEMS` 同款；此前全用 fp16 口径 = max_abs_limit 1e-1，判据虚宽）
 FP32_ITEMS = ("dbeta", "dg")
@@ -210,10 +211,9 @@ def run_stubs(level):
     """L1/L2/Boundary 三层（场景 B：填充桩体，不改 main 与 --level 接口）。
 
     L1 [PRECISION_*] 阻塞：横幅**在 run_relay 之后**按该 case 的真实 ok 打印（B1）：
-      - T=64（单 chunk）：六项全 gate —— 已实测 3.26e-4~9.78e-4（notes [133]）
-      - T=128/192（多 chunk）：只 gate dq/dv/dg/dh0；dk/dbeta 打 record-only
-        （旧备注写的“dk 2.6x / dbeta 1.2x”已作废：那是 max_abs 与 rel 两种口径混比，
-        见 LESSONS §5。六项实测在 T=256 均 <5e-3，但 128/192 未测，不先放宽门。）
+      - T=64（单 chunk）：六项全 gate —— 已实测 2.5e-4~6.5e-4（notes [140]）
+      - T=128/192（多 chunk）：六项全 gate（rel 口径）—— 实测最差 2.400e-03 / 1.911e-03；
+        旧备注的“dk 2.6x / dbeta 1.2x”已作废（那是 max_abs 与 rel 口径混比，见 LESSONS §5）
     L2 [BOUNDARY_*] 阻塞：非整除 T 由 relay 入口 `assert T_len % C == 0` 拒绝（B3），
       只接受 AssertionError；其它异常 / 静默接受一律 FAIL
     Boundary [BOUNDARY_*] 非阻塞：dO 注入 NaN/Inf，位置敏感比较
@@ -228,11 +228,11 @@ def run_stubs(level):
         ok &= _ok
         _ok = run_relay(1, 1, 128, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
         print(("[PRECISION_PASS] " if _ok else "[PRECISION_FAIL] ")
-              + "l1 T=128 多 chunk（dk/dbeta record-only）", flush=True)
+              + "l1 T=128 多 chunk（六项 gate）", flush=True)
         ok &= _ok
         _ok = run_relay(1, 1, 192, 64, 64, 64, gate=GATED_MULTI, rel_gate=True)
         print(("[PRECISION_PASS] " if _ok else "[PRECISION_FAIL] ")
-              + "l1 T=192 多 chunk（dk/dbeta record-only）", flush=True)
+              + "l1 T=192 多 chunk（六项 gate）", flush=True)
         ok &= _ok
     elif level == "l2":
         ok &= _run_case_expect_reject(
