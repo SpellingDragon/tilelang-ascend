@@ -923,7 +923,10 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
-    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
+    # BK=DK ⇒ bk_num=1：`solve_a` 的 KK^T 分块累加在 bk_num>1 时算错（notes [152]），
+    # 128 形下 A 差 1.4e-01、H_in 连带差 4.3e-02；改成 BK=DK 后回到 6e-05 / 4e-04。
+    # 这是**回避**不是修复：`scan2a/scan2b` 里同形的 BK 分半仍有同样风险。
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, DK, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
@@ -1027,7 +1030,10 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     msk_m2 = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
     msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
-    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
+    # BK=DK ⇒ bk_num=1：`solve_a` 的 KK^T 分块累加在 bk_num>1 时算错（notes [152]），
+    # 128 形下 A 差 1.4e-01、H_in 连带差 4.3e-02；改成 BK=DK 后回到 6e-05 / 4e-04。
+    # 这是**回避**不是修复：`scan2a/scan2b` 里同形的 BK 分半仍有同样风险。
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, DK, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
