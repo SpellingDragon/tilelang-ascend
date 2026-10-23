@@ -18,10 +18,10 @@ from gdn_bwd_v2 import gdn_bwd_v2_cumsum, gdn_bwd_v2_scan1, gdn_bwd_v2_solve_a
 from example_gdn_bwd import _np_chunk_fwd
 
 CASES = (
-    (1, 256, 64),    # CONTROL：64 形，h_rel/a_rel 必须 ~1e-3（与 harness 同量级）
-    (1, 512, 64),    # CONTROL
-    (1, 256, 128),   # 目标形
-    (1, 512, 128),
+    (1, 256, 64, 64),     # CONTROL：64 形，h_rel/a_rel 必须 ~1e-3（与 harness 同量级）
+    (1, 512, 64, 64),     # CONTROL
+    (1, 256, 128, 64),    # 目标形，BK=64 ⇒ bk_num=2（现行 relay 走这条）
+    (1, 256, 128, 128),   # 目标形，BK=128 ⇒ bk_num=1（候选修法）
 )
 GATE = 5e-3
 # 本支曾被我误判为“不可信”：当时拿它的 128 数字去和 harness 的 64 数字比（4.3e-2 vs 4e-4），
@@ -33,7 +33,7 @@ GATE = 5e-3
 # 若 a_rel 在 64 的 CONTROL 上也不小，则 a_rel 仍不可信；h_rel 若在 64 上小、在 128 上大，则定案。
 
 
-def one(H, T_len, dim, B=1, C=64):
+def one(H, T_len, dim, bk, B=1, C=64):
     DK = DV = dim
     torch.manual_seed(7)
     dt = torch.float16
@@ -56,7 +56,7 @@ def one(H, T_len, dim, B=1, C=64):
     idt = torch.eye(C, dtype=torch.float32, device=dev)
     t0 = time.perf_counter()
     ws_g, _gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g.to(dev))
-    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype="float16")(
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, bk, dtype="float16")(
         k.to(dev), beta.to(dev), ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype="float16")(
         k.to(dev), v.to(dev), beta.to(dev), ws_g, ws_a, h0.to(dev))
@@ -88,7 +88,7 @@ def one(H, T_len, dim, B=1, C=64):
     h_rel = h_num / (h_den + 1e-30)
     a_rel = a_num / (a_den + 1e-30)
     tag = "CONTROL" if dim == 64 else "WSCMP"
-    print(f"{tag} H={H:<2} T={T_len:<5} DK={DK:<3} chunks={nc:<2} pre_s={pre_s:5.1f} "
+    print(f"{tag} H={H:<2} T={T_len:<5} DK={DK:<3} BK={bk:<3} chunks={nc:<2} pre_s={pre_s:5.1f} "
           f"h_rel={h_rel:.3e} a_rel={a_rel:.3e} "
           f"h={'SUSPECT' if h_rel >= GATE else 'ok'} "
           f"a={'SUSPECT' if a_rel >= GATE else 'ok'}", flush=True)
@@ -97,11 +97,11 @@ def one(H, T_len, dim, B=1, C=64):
 
 def main():
     print("WSCMP start（64 形为 CONTROL；ws_h vs golden hin、ws_a vs golden a_mat）", flush=True)
-    for H, T_len, dim in CASES:
+    for H, T_len, dim, bk in CASES:
         try:
-            one(H, T_len, dim)
+            one(H, T_len, dim, bk)
         except Exception as exc:                            # noqa: BLE001
-            print(f"WSCMP H={H} T={T_len} DK={dim} RAISED {type(exc).__name__}: "
+            print(f"WSCMP H={H} T={T_len} DK={dim} BK={bk} RAISED {type(exc).__name__}: "
                   f"{str(exc).splitlines()[0][:110]}", flush=True)
     print("WSCMP-DONE", flush=True)
 
