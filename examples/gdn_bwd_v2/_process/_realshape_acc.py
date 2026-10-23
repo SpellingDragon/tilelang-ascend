@@ -23,7 +23,8 @@ ITEMS = ("dq", "dk", "dv", "dbeta", "dg", "dh0")
 GATE = 5e-3
 
 
-def one(T_len, B=1, H=16, DK=128, DV=128, C=64):
+def one(T_len, dim=128, B=1, H=16, C=64):
+    DK = DV = dim
     torch.manual_seed(7)
     dt = torch.float16
     # 先在 CPU 造 fp32 再 cast 到 fp16：golden 与 kernel 拿到的是**同一批 fp16 位型**
@@ -81,19 +82,21 @@ def one(T_len, B=1, H=16, DK=128, DV=128, C=64):
         print(f"REALSHAPE-ACC T={T_len} item={n:<5} rel={rel:.3e} "
               f"max_abs={max_abs[n]:.3e} gmax={gmax[n]:.3e} "
               f"verdict={'PASS' if good else 'FAIL'}", flush=True)
-    print(f"REALSHAPE-ACC T={T_len} verdict={'ALL_PASS' if ok_all else 'SOME_FAIL'}",
-          flush=True)
+    # dim=64 是 CONTROL：这里历史上就是 ~1e-3；它不过则本支失效，128 的数字不采信
+    tag = "CONTROL" if dim == 64 else "ACC"
+    print(f"REALSHAPE-ACC T={T_len} {tag} dim={dim} "
+          f"verdict={'ALL_PASS' if ok_all else 'SOME_FAIL'}", flush=True)
     return ok_all
 
 
 def main():
     all_ok = True
-    # 512 = 8 chunk（先确认 H>1 下六项对得上）；8192 就是 DoD 那一档（128 chunk）
-    for T_len in (512, 8192):
+    # (T, dim, tag)：dim=64 是 CONTROL；512 与 8192 是目标形（8192 = DoD 那一档）
+    for T_len, dim in ((512, 64), (512, 128), (8192, 128)):
         try:
-            all_ok &= one(T_len)
+            all_ok &= one(T_len, dim)
         except Exception as exc:                            # noqa: BLE001
-            print(f"REALSHAPE-ACC T={T_len} RAISED {type(exc).__name__}: "
+            print(f"REALSHAPE-ACC T={T_len} dim={dim} RAISED {type(exc).__name__}: "
                   f"{str(exc).splitlines()[0][:110]}", flush=True)
             all_ok = False
             break
