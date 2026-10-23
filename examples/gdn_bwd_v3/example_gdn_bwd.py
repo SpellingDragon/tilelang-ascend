@@ -13,6 +13,10 @@ Precision, measured on an Ascend 910B (full tables in the run notes):
   * single head only: H > 1 needs the per-chunk slices made contiguous at every
     kernel boundary (see `_contig`); the multi-head path is exercised by the
     real-shape probe, not by this example.
+  * DK = DV = 64 only. At DK = DV = 128 the same code, same head count and
+    same chunk count gives 4e-2..9e-2 on five of six gradients (dh0 stays
+    2e-3); the 64 -> 128 flip is the only variable changed and it is still
+    under investigation. Do not read the two cases below as covering 128.
 """
 
 import math
