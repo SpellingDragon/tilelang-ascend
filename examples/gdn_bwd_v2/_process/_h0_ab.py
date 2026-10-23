@@ -19,18 +19,27 @@ import torch
 import torch_npu  # noqa: F401
 
 from gdn_bwd_v3 import gdn_bwd_v3_relay
-from test_gdn_bwd_v2 import _case_inputs, _golden_item
+from test_gdn_bwd_v2 import (
+    _case_inputs, _golden_item, _np_bwd_adjoint, _np_fwd_exact,
+)
 
 ITEMS = ("dq", "dk", "dv", "dbeta", "dg", "dh0")
 GATE = 5e-3
 
 
 def run(h0_mode, T_len=64, B=1, H=1, DK=64, DV=64, C=64):
-    # 与 run_relay 完全同参（fp16 / zero / 无特殊值）；h0_mode="randn" 时下面再替换
+    # 与 run_relay 完全同参（fp16 / zero / 无特殊值）
     (q, k, v, g, beta, h0, do), gold = _case_inputs(B, H, T_len, DK, DV, "float16", "zero", False)
     if h0_mode == "randn":
         torch.manual_seed(7)
         h0 = torch.randn(B, H, DV, DK, dtype=torch.float32) * 0.1
+        # 关键：golden 必须跟着换，否则比的是"不同 h0 的两个解"，结果无意义
+        Qb, Kb, Vb = q.double().numpy()[0], k.double().numpy()[0], v.double().numpy()[0]
+        gb, bb, db = g.double().numpy()[0], beta.double().numpy()[0], do.double().numpy()[0]
+        hb = h0.double().numpy()[0]
+        _f, HIST, _l = _np_fwd_exact(H, T_len, DK, DV, Qb, Kb, Vb, bb, gb, hb)
+        gold = [_np_bwd_adjoint(H, T_len, DK, DV, Qb, Kb, Vb, bb, gb, HIST, db, order="ub")]
+        print("H0AB note: golden 已按 h0=0.1·randn 重算", flush=True)
 
     dev, dt = "npu", torch.float16
     out = gdn_bwd_v3_relay(
