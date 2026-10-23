@@ -30,9 +30,6 @@
 - `tilelang-debug-helper`：为算子添加 GDB 调试代码，配置 CMakeLists.txt 与 VSCode 联合调试
 - `tilelang-error-fixer`：编译 / 运行时错误诊断与修复
 
-#### 验收与取证
-- `tilelang-op-acceptance`：算子数值验收的十条可机械执行检查（结论四格 / 目标形优先 / 切片连续化 / 分块参数退化 / 探针对照臂 / 口径不混比 / 合规开关 / 不改进程中脚本），附验收报告模板、“小形对、目标形不对”的排查路线与三个取证工具
-
 #### 性能调优
 - `tilelang-perf-optimization`：性能优化方案、最佳实践（Flash Attention / GEMM intrinsic / RoPE）与反模式排查
 
