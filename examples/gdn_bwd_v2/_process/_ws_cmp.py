@@ -17,8 +17,12 @@ import torch_npu  # noqa: F401
 from gdn_bwd_v2 import gdn_bwd_v2_cumsum, gdn_bwd_v2_scan1, gdn_bwd_v2_solve_a
 from example_gdn_bwd import _np_chunk_fwd
 
-CASES = ((1, 256), (1, 512), (16, 256), (16, 512))
+CASES = ((1, 256), (1, 512))
 GATE = 5e-3
+# 注意：本支只能当"粗查"用。`a_rel` 把 `ws_a` 的 [B,H,T,C] 按行切块与 golden 的 a_mat 比，
+# 但 solve_a 的存储约定（块在 L 轴上的排布/是否转置）尚未证实；实测 a_rel=14% 而
+# harness 在**同一配置**下 dq 只有 4e-4，二者矛盾 ⇒ 在把约定核实之前，
+# **h_rel/a_rel 不能当成"前置件不准"的证据**。可信的是 `_relay_attr.py` 的末梢对比。
 
 
 def one(H, T_len, B=1, DK=128, DV=128, C=64):
@@ -74,30 +78,8 @@ def one(H, T_len, B=1, DK=128, DV=128, C=64):
 
     h_rel = h_num / (h_den + 1e-30)
     a_rel = a_num / (a_den + 1e-30)
-
-    # 不依赖 golden 的 A/B：只变 scan1 的 H。`ws_g`/`ws_a` 一律复用 H=16 那次的结果
-    # （否则同时把 cumsum/solve_a 也变了，分不清是谁的锅）。
-    ab = "-"
-    if H > 1:
-        dif = 0.0
-        den = float(np.abs(h_np).max())
-        gs = ws_g.float().cpu().numpy()
-        for hh in range(H):
-            ks = k[:, hh:hh + 1].contiguous()
-            vs = v[:, hh:hh + 1].contiguous()
-            bs = beta[:, hh:hh + 1].contiguous()
-            g1 = torch.from_numpy(gs[:, hh:hh + 1]).to(dev).contiguous()
-            a1 = ws_a[:, hh:hh + 1].contiguous()
-            h01 = h0[:, hh:hh + 1].contiguous()
-            h1 = gdn_bwd_v2_scan1(B, 1, T_len, DK, DV, C, 64, 64, dtype="float16")(
-                ks, vs, bs, g1, a1, h01)
-            hh_np = h1.float().cpu().numpy()
-            d = np.abs(hh_np[0, 0].astype(np.float64) - h_np[0, hh].astype(np.float64))
-            dif = max(dif, float(d.max()))
-        ab = f"{dif / (den + 1e-30):.3e}"
-
     print(f"WSCMP H={H:<2} T={T_len:<5} chunks={nc:<2} pre_s={pre_s:5.1f} "
-          f"h_rel={h_rel:.3e} a_rel={a_rel:.3e} ab_h1_vs_hN={ab} "
+          f"h_rel={h_rel:.3e} a_rel={a_rel:.3e} "
           f"h={'SUSPECT' if h_rel >= GATE else 'ok'} "
           f"a={'SUSPECT' if a_rel >= GATE else 'ok'}", flush=True)
     return h_rel, a_rel

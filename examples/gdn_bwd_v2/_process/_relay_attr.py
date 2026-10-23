@@ -27,7 +27,15 @@ from gdn_bwd_v3 import gdn_bwd_v3_relay
 from example_gdn_bwd import _np_chunk_bwd, _np_chunk_fwd
 
 ITEMS = ("dq", "dk", "dv", "dbeta", "dg", "dh0")
-CASES = ((1, 512, False), (1, 512, True), (16, 256, False), (16, 512, False), (16, 512, True))
+# 已排除的假设（都有数据）：H 数、chunk 数、golden H_in、golden 本身。
+# 剩下的唯一单变量：**DK/DV**。harness（`v3t`/`ex`，~1e-3）用 64，
+# 我的探针（~1e-1）全用 128。前两行就是 harness 的 L0/L1 同参，用来做对照。
+CASES = (
+    (1, 64, 64, False),        # harness L0 同参（单 chunk）
+    (1, 256, 64, False),       # harness L1 同参（4 chunk）
+    (1, 256, 128, False),      # 只改 DK/DV
+    (1, 512, 128, False),      # 已知 7.6e-2，留作基准
+)
 
 
 def _build(H, T_len, B, DK, DV):
@@ -73,7 +81,8 @@ def _golden_h(caches, B, H, T_len, C, dev):
     return torch.from_numpy(np.stack(rows).reshape(B, H, nc, *rows[0].shape[1:])).to(dev)
 
 
-def one(H, T_len, use_golden_h, B=1, DK=128, DV=128, C=64):
+def one(H, T_len, dim, use_golden_h, B=1, C=64):
+    DK = DV = dim
     cpu, npc = _build(H, T_len, B, DK, DV)
     dev = "npu"
     gpu = [x.to(dev) for x in cpu]
@@ -101,19 +110,19 @@ def one(H, T_len, use_golden_h, B=1, DK=128, DV=128, C=64):
     rels = {n: mx[n] / (gm[n] + 1e-30) for n in ITEMS}
     tag = "goldenH" if use_golden_h else "native "
     worst = max(rels.items(), key=lambda kv: kv[1])
-    print(f"ATTR H={H:<2} T={T_len:<5} chunks={T_len // C:<2} {tag} card_s={card_s:6.1f} "
-          f"worst={worst[0]}{worst[1]:.2e} "
+    print(f"ATTR H={H:<2} T={T_len:<5} DK={DK:<3} chunks={T_len // C:<2} {tag} "
+          f"card_s={card_s:6.1f} worst={worst[0]}{worst[1]:.2e} "
           + " ".join(f"{n}={rels[n]:.2e}" for n in ITEMS), flush=True)
     return rels
 
 
 def main():
-    print("ATTR start（native 走 v2 的 scan1/solve_a；goldenH 只替换 H_in）", flush=True)
-    for H, T_len, use_golden_h in CASES:
+    print("ATTR start（DK/DV 单变量扫描；native 走 v2 的 scan1/solve_a）", flush=True)
+    for H, T_len, dim, use_golden_h in CASES:
         try:
-            one(H, T_len, use_golden_h)
+            one(H, T_len, dim, use_golden_h)
         except Exception as exc:                            # noqa: BLE001
-            print(f"ATTR H={H} T={T_len} goldenH={int(use_golden_h)} RAISED "
+            print(f"ATTR H={H} T={T_len} DK={dim} goldenH={int(use_golden_h)} RAISED "
                   f"{type(exc).__name__}: {str(exc).splitlines()[0][:110]}", flush=True)
     print("ATTR-DONE", flush=True)
 
