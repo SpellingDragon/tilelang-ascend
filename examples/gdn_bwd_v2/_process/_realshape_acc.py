@@ -51,6 +51,15 @@ def one(T_len, dim=128, H=16, B=1, C=64):
 
     got = [x.float().cpu() for x in out[:6]]
 
+    # V08 硬门：非有限值必须在聚合前逐项抓住。旧路径把逐元素 diff 交给
+    # `max(prev, float(nan))` —— Python 的 max 对 nan 比较恒为 False，NaN 被吞掉，
+    # 该 case 反而打印出"看起来正常"的 rel（max_abs=0）。这里先逐项
+    # `torch.isfinite(...).all()`，非有限直接判该 case FAIL（数值复验待上卡）。
+    finite = {n: bool(torch.isfinite(got[i]).all().item()) for i, n in enumerate(ITEMS)}
+    for n in ITEMS:
+        if not finite[n]:
+            print(f"REALSHAPE-ACC NONFINITE item={n} T={T_len}", flush=True)
+
     qn, kn, vn, gn, betan, h0n, don = npc
     max_abs = {n: 0.0 for n in ITEMS}
     gmax = {n: 0.0 for n in ITEMS}
@@ -76,8 +85,9 @@ def one(T_len, dim=128, H=16, B=1, C=64):
           f"card_s={card_s:.1f} gold_s={gold_s:.1f}", flush=True)
     ok_all = True
     for n in ITEMS:
-        rel = max_abs[n] / (gmax[n] + 1e-30)
-        good = rel < GATE
+        # 非有限项不报 rel（nan 不参与比较）；硬门已由上面的 finite 记下
+        rel = max_abs[n] / (gmax[n] + 1e-30) if finite[n] else float("nan")
+        good = finite[n] and rel < GATE
         ok_all &= good
         print(f"REALSHAPE-ACC T={T_len} item={n:<5} rel={rel:.3e} "
               f"max_abs={max_abs[n]:.3e} gmax={gmax[n]:.3e} "
@@ -95,6 +105,7 @@ def main():
     # T2：`dk` 在 8~16 chunk 有波动（T=512/DK=64 实测 9.97e-03，T=8192 却 4.29e-03），
     # 这里用 H=1 扫一条 T 曲线把它定性（H=1 使 golden 便宜 16×，而 dk 无 head 耦合）。
     for T_len, dim, H in (
+        (8192, 128, 16),   # 目标形（B1 H16 T8192 DK128 DV128，128 chunk）
         (256, 64, 1),      # CONTROL
         (128, 128, 1),     # 2 chunk
         (512, 128, 1),     # 8 chunk

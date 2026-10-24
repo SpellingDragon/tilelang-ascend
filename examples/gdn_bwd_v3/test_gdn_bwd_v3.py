@@ -24,8 +24,8 @@ for p in (_HERE, _V2, "/tmp", "/tmp/ta_unpack/ta_pkg"):
 
 import torch_npu  # noqa: F401,E402
 
-from test_gdn_bwd_v2 import (_case_inputs, _golden_item, _np_chunk_fwd,  # noqa: E402
-                            check_precision)
+from test_gdn_bwd_v2 import (_case_inputs, _golden_item, _np_bwd_adjoint,  # noqa: E402
+                            _np_chunk_fwd, _np_fwd_exact, check_precision)
 
 from gdn_bwd_v3 import gdn_bwd_v3, gdn_bwd_v3_relay  # noqa: E402
 
@@ -249,15 +249,24 @@ def run_stubs(level):
     elif level == "boundary":
         def _inj(val):
             def _f():
-                (q, k, v, g, beta, h0, do), gold = _case_inputs(
+                (q, k, v, g, beta, h0, do), _gold = _case_inputs(
                     1, 1, 64, 64, 64, "float16", "zero", False)
                 do = do.clone()
                 do[0, 0, 5, 3] = val
+                # B2：参考必须与被测吃**同一个 do**（含注入值）。只改输入不改 golden
+                # 会让"注了 Inf/NaN 的输出"去对"无注入的干净参考"——有限位的差异
+                # 全来自两端输入不同，判据失效（口径错位）。这里用同一批 fp16 位型
+                # 回铸 fp64，按 `_case_inputs` 同一套 golden（fwd_exact + bwd_adjoint）重算。
+                _q, _k = q[0].double().numpy(), k[0].double().numpy()
+                _v, _b = v[0].double().numpy(), beta[0].double().numpy()
+                _g, _h0 = g[0].double().numpy(), h0[0].double().numpy()
+                _do = do[0].double().numpy()
+                _, _hist, _ = _np_fwd_exact(1, 64, 64, 64, _q, _k, _v, _b, _g, _h0)
+                ref = _np_bwd_adjoint(1, 64, 64, 64, _q, _k, _v, _b, _g, _hist, _do)[0][None]
                 dev, dt = "npu", torch.float16
                 _o = gdn_bwd_v3_relay(
                     q.to(dev).to(dt), k.to(dev).to(dt), v.to(dev).to(dt), g.to(dev),
                     beta.to(dev), h0.to(dev).to(dt), do.to(dev).to(dt), chunk_size=64)
-                ref = np.concatenate([_golden_item(gold, "dq", 0)], axis=0)
                 return _o[0].cpu().float(), ref      # 只取 dq；relay 可能多返回 dk_parts
             return _f
         _run_boundary_case("dq_inf", "float16", _inj(float("inf")))
