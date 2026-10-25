@@ -930,10 +930,11 @@ def gdn_bwd_v3(q, k, v, g, beta, h0, do, chunk_size=64):
     msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
 
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
-    # BK=DK ⇒ bk_num=1：`solve_a` 的 KK^T 分块累加在 bk_num>1 时算错（notes [152]），
-    # 128 形下 A 差 1.4e-01、H_in 连带差 4.3e-02；改成 BK=DK 后回到 6e-05 / 4e-04。
-    # 这是**回避**不是修复：`scan2a/scan2b` 里同形的 BK 分半仍有同样风险。
-    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, DK, dtype=dtype)(
+    # T3a（2026-10-25，车 20261025T0925Z）：`solve_a` 回到上游 idiom（GM→L1 直拷 + init=(i==0)）后，
+    # DK=128/BK=64 与 BK=128 的 A/H_in **逐位相同**（a_rel 5.961e-05、h_rel 3.992e-04），
+    # 64 形两条 CONTROL 也 ok（h_rel 3.621e-04 / 6.616e-04）。故撤掉 BK=DK 绕行，
+    # 恢复 BK=64 的分块累加路径。`scan2a/scan2b` 的同形分半仍未单独验证（notes [160]）。
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
@@ -1037,10 +1038,11 @@ def gdn_bwd_v3_relay(q, k, v, g, beta, h0, do, chunk_size=64,
     msk_m2 = torch.tril(torch.ones(C, C, dtype=torch.float32, device=dev))
     msk_m = msk_m2[None, None].expand(B, H, C, C).contiguous()   # kernel declares [B,H,C,C]
     ws_g, ws_gam = gdn_bwd_v2_cumsum(B, H, T_len, C)(g)
-    # BK=DK ⇒ bk_num=1：`solve_a` 的 KK^T 分块累加在 bk_num>1 时算错（notes [152]），
-    # 128 形下 A 差 1.4e-01、H_in 连带差 4.3e-02；改成 BK=DK 后回到 6e-05 / 4e-04。
-    # 这是**回避**不是修复：`scan2a/scan2b` 里同形的 BK 分半仍有同样风险。
-    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, DK, dtype=dtype)(
+    # T3a（2026-10-25，车 20261025T0925Z）：`solve_a` 回到上游 idiom（GM→L1 直拷 + init=(i==0)）后，
+    # DK=128/BK=64 与 BK=128 的 A/H_in **逐位相同**（a_rel 5.961e-05、h_rel 3.992e-04），
+    # 64 形两条 CONTROL 也 ok（h_rel 3.621e-04 / 6.616e-04）。故撤掉 BK=DK 绕行，
+    # 恢复 BK=64 的分块累加路径。`scan2a/scan2b` 的同形分半仍未单独验证（notes [160]）。
+    ws_a = gdn_bwd_v2_solve_a(B, H, T_len, DK, C, 64, dtype=dtype)(
         k, beta, ws_g, msk_j, idt)
     ws_h = gdn_bwd_v2_scan1(B, H, T_len, DK, DV, C, 64, 64, dtype=dtype)(
         k, v, beta, ws_g, ws_a, h0)
